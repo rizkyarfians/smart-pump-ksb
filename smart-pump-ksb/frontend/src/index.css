@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&display=swap');
+
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  font-family: 'Poppins', sans-serif;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+.alarm-icon-yellow {
+  filter: invert(77%) sepia(74%) saturate(905%) hue-rotate(359deg)
+    brightness(101%) contrast(105%);
+}
+
+.alarm-icon-red {
+  filter: brightness(0) saturate(100%) invert(24%) sepia(93%)
+    saturate(2928%) hue-rotate(343deg) brightness(91%) contrast(93%);
+}
+
+.alarm-icon-blue {
+  filter: invert(43%) sepia(89%) saturate(2441%) hue-rotate(203deg)
+    brightness(96%) contrast(95%);
+}
