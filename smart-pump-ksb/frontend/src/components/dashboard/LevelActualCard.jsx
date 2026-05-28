@@ -1,9 +1,94 @@
+import { useEffect, useState } from 'react';
+
+import API from '../../services/api';
 import { LEVEL_RANGES } from '../../data/dashboardData';
 
 export default function LevelActualCard() {
-  const level = 2.45;
-  const maxLevel = 5.0;
-  const percentage = Math.min(100, Math.max(0, (level / maxLevel) * 100));
+  const [levelPercent, setLevelPercent] = useState(0);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [statusText, setStatusText] = useState('Waiting camera level');
+
+  const [levelStatus, setLevelStatus] = useState({
+    llActive: false,
+    hlActive: false,
+    activeLL: [],
+    activeHL: [],
+  });
+
+  useEffect(() => {
+    let active = true;
+
+    async function fetchLevelData() {
+      try {
+        const [waterLevelRes, levelStatusRes] = await Promise.all([
+          API.get('/modbus/water-level/latest'),
+          API.get('/modbus/level-status'),
+        ]);
+
+        if (!active) return;
+
+        if (waterLevelRes.data?.success) {
+          const data = waterLevelRes.data.data || {};
+          const nextLevel = Number(data.levelPercent || 0);
+
+          setLevelPercent(Math.max(0, Math.min(100, nextLevel)));
+          setUpdatedAt(data.updatedAt || null);
+          setStatusText('Camera level');
+        }
+
+        if (levelStatusRes.data?.success) {
+          const summary = levelStatusRes.data.data?.summary || {};
+
+          setLevelStatus({
+            llActive: Boolean(summary.llActive),
+            hlActive: Boolean(summary.hlActive),
+            activeLL: summary.activeLL || [],
+            activeHL: summary.activeHL || [],
+          });
+        }
+      } catch (err) {
+        if (!active) return;
+
+        console.log('Failed to fetch level data:', err);
+        setStatusText('Camera level unavailable');
+      }
+    }
+
+    fetchLevelData();
+
+    const interval = setInterval(fetchLevelData, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const percentage = Math.min(100, Math.max(0, levelPercent));
+
+  const getRangeClassName = (label) => {
+    const normalized = String(label || '').toLowerCase();
+
+    const isLowLow = normalized.includes('low low');
+    const isHigh = normalized === 'high level';
+
+    const isActive =
+      (isLowLow && levelStatus.llActive) ||
+      (isHigh && levelStatus.hlActive);
+
+    if (!isActive) {
+      return 'grid grid-cols-[minmax(0,1fr)_52px] gap-2';
+    }
+
+    return 'grid grid-cols-[minmax(0,1fr)_52px] gap-2 rounded-lg bg-red-50 px-2 py-1 text-red-700';
+  };
+
+  const activeStatusText =
+    levelStatus.hlActive
+      ? `HL Active: ${levelStatus.activeHL.map((item) => item.label).join(', ')}`
+      : levelStatus.llActive
+        ? `LL Active: ${levelStatus.activeLL.map((item) => item.label).join(', ')}`
+        : 'LL / HL Normal';
 
   return (
     <div className="flex h-full min-h-0 items-center justify-center rounded-xl bg-white">
@@ -20,15 +105,12 @@ export default function LevelActualCard() {
           </div>
 
           <div className="relative flex h-50 items-center justify-center">
-            {/* Rounded level bar */}
             <div className="relative h-full w-9 overflow-hidden rounded-full bg-gradient-to-b from-sky-100 to-blue-900 shadow-inner">
-              {/* Actual level fill */}
               <div
-                className="absolute bottom-0 left-0 w-full bg-gradient-to-b from-sky-400 to-blue-600"
+                className="absolute bottom-0 left-0 w-full bg-gradient-to-b from-sky-400 to-blue-600 transition-all duration-500"
                 style={{ height: `${percentage}%` }}
               />
 
-              {/* Tick marks */}
               {[20, 40, 60, 80].map((bottom) => (
                 <div
                   key={bottom}
@@ -44,11 +126,26 @@ export default function LevelActualCard() {
         <div className="min-w-0">
           <div className="mb-5 text-center">
             <div className="whitespace-nowrap text-4xl font-extrabold leading-none text-blue-600">
-              {level.toFixed(2)} m
+              {percentage.toFixed(1)}%
             </div>
 
             <div className="mt-2 text-[11px] font-semibold uppercase text-slate-500">
               Level Actual
+            </div>
+
+            <div className="mt-1 text-[10px] font-bold text-slate-400">
+              {statusText}
+              {updatedAt ? ` · ${new Date(updatedAt).toLocaleTimeString()}` : ''}
+            </div>
+
+            <div
+              className={`mt-2 text-[10px] font-black ${
+                levelStatus.llActive || levelStatus.hlActive
+                  ? 'text-red-600'
+                  : 'text-green-600'
+              }`}
+            >
+              {activeStatusText}
             </div>
           </div>
 
@@ -56,13 +153,13 @@ export default function LevelActualCard() {
             {LEVEL_RANGES.map((item) => (
               <div
                 key={item.label}
-                className="grid grid-cols-[minmax(0,1fr)_52px] gap-2"
+                className={getRangeClassName(item.label)}
               >
-                <span className="truncate font-medium text-slate-700">
+                <span className="truncate font-medium">
                   {item.label}
                 </span>
 
-                <span className="whitespace-nowrap text-right font-bold text-slate-900">
+                <span className="whitespace-nowrap text-right font-bold">
                   {item.value}
                 </span>
               </div>

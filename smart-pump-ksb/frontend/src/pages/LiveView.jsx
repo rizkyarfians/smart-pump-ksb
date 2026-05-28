@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import API from '../services/api';
@@ -274,17 +274,387 @@ function CameraStreamCard({
   onReload,
 }) {
   const streamUrl = `${API_BASE_URL}/camera/${camera.id}/mjpeg?v=${streamKey}`;
+  const snapshotUrl = `${API_BASE_URL}/camera/${camera.id}/snapshot`;
+  const calibrationStorageKey = `water_level_calibration_camera_${camera.id}`;
+
+  const imageRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
+  const processingCanvasRef = useRef(null);
+  const lastSentLevelRef = useRef(null);
+
+  const [selectMode, setSelectMode] = useState(null);
+  const [topPoint, setTopPoint] = useState(null);
+  const [bottomPoint, setBottomPoint] = useState(null);
+  const [waterLevel, setWaterLevel] = useState(0);
+  const [waterLineY, setWaterLineY] = useState(null);
+  const [sendStatus, setSendStatus] = useState('Idle');
+
+  const getCanvasSize = useCallback(() => {
+    const canvas = overlayCanvasRef.current;
+    const image = imageRef.current;
+
+    const rect =
+      canvas?.getBoundingClientRect() ||
+      image?.getBoundingClientRect();
+
+    return {
+      width: rect?.width || 0,
+      height: rect?.height || 0,
+    };
+  }, []);
+
+  const saveCalibration = useCallback(
+    (nextTopPoint, nextBottomPoint) => {
+      const { width, height } = getCanvasSize();
+
+      if (width <= 0 || height <= 0) return;
+
+      const payload = {
+        topPoint: nextTopPoint
+          ? {
+              xRatio: nextTopPoint.x / width,
+              yRatio: nextTopPoint.y / height,
+            }
+          : null,
+        bottomPoint: nextBottomPoint
+          ? {
+              xRatio: nextBottomPoint.x / width,
+              yRatio: nextBottomPoint.y / height,
+            }
+          : null,
+      };
+
+      localStorage.setItem(
+        calibrationStorageKey,
+        JSON.stringify(payload),
+      );
+    },
+    [calibrationStorageKey, getCanvasSize],
+  );
+
+  const loadCalibration = useCallback(() => {
+    const saved = localStorage.getItem(calibrationStorageKey);
+
+    if (!saved) return;
+
+    const { width, height } = getCanvasSize();
+
+    if (width <= 0 || height <= 0) return;
+
+    try {
+      const parsed = JSON.parse(saved);
+
+      if (parsed.topPoint) {
+        setTopPoint({
+          x: parsed.topPoint.xRatio * width,
+          y: parsed.topPoint.yRatio * height,
+        });
+      }
+
+      if (parsed.bottomPoint) {
+        setBottomPoint({
+          x: parsed.bottomPoint.xRatio * width,
+          y: parsed.bottomPoint.yRatio * height,
+        });
+      }
+    } catch (err) {
+      console.log('Failed to load water level calibration:', err);
+    }
+  }, [calibrationStorageKey, getCanvasSize]);
+
+  const sendWaterLevelToPLC = useCallback(async (level) => {
+    try {
+      setSendStatus('Sending...');
+
+      const res = await API.post('/modbus/water-level', {
+        level,
+      });
+
+      if (res.data?.success) {
+        setSendStatus(`Sent to PLC: ${level.toFixed(1)}%`);
+      } else {
+        setSendStatus(res.data?.message || 'Failed send to PLC');
+      }
+    } catch (err) {
+      console.log('Failed send water level:', err);
+
+      const errorMessage =
+        err.response?.data?.error ||
+        err.response?.data?.message ||
+        err.message ||
+        'Unknown error';
+
+      setSendStatus(`Failed: ${errorMessage}`);
+    }
+  }, []);
+
+  const drawOverlay = useCallback(() => {
+    const canvas = overlayCanvasRef.current;
+    const image = imageRef.current;
+
+    if (!canvas || !image) return;
+
+    const rect = image.getBoundingClientRect();
+
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+
+    const ctx = canvas.getContext('2d');
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.lineWidth = 3;
+    ctx.font = '14px Arial';
+
+    if (topPoint) {
+      ctx.strokeStyle = '#22c55e';
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath();
+      ctx.arc(topPoint.x, topPoint.y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillText('TOP 100%', topPoint.x + 10, topPoint.y - 8);
+    }
+
+    if (bottomPoint) {
+      ctx.strokeStyle = '#ef4444';
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(bottomPoint.x, bottomPoint.y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillText('BOTTOM 0%', bottomPoint.x + 10, bottomPoint.y + 18);
+    }
+
+    if (topPoint && bottomPoint) {
+      ctx.strokeStyle = '#facc15';
+      ctx.beginPath();
+      ctx.moveTo(topPoint.x, topPoint.y);
+      ctx.lineTo(bottomPoint.x, bottomPoint.y);
+      ctx.stroke();
+    }
+
+    if (waterLineY !== null) {
+      ctx.strokeStyle = '#06b6d4';
+      ctx.fillStyle = '#06b6d4';
+
+      ctx.beginPath();
+      ctx.moveTo(0, waterLineY);
+      ctx.lineTo(canvas.width, waterLineY);
+      ctx.stroke();
+
+      ctx.fillText(
+        `Water Level ${waterLevel.toFixed(1)}%`,
+        16,
+        Math.max(22, waterLineY - 10),
+      );
+    }
+  }, [topPoint, bottomPoint, waterLineY, waterLevel]);
+
+  const detectWaterLevel = useCallback(async () => {
+    if (!topPoint || !bottomPoint) return;
+
+    const image = imageRef.current;
+    const overlayCanvas = overlayCanvasRef.current;
+    const processingCanvas = processingCanvasRef.current;
+
+    if (!image || !overlayCanvas || !processingCanvas) return;
+
+    const displayRect = image.getBoundingClientRect();
+    const width = Math.round(displayRect.width);
+    const height = Math.round(displayRect.height);
+
+    if (width <= 0 || height <= 0) return;
+
+    try {
+      const response = await fetch(`${snapshotUrl}?t=${Date.now()}`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        throw new Error('Snapshot failed');
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const snapshotImage = new Image();
+
+      snapshotImage.onload = () => {
+        const ctx = processingCanvas.getContext('2d');
+
+        processingCanvas.width = width;
+        processingCanvas.height = height;
+
+        ctx.drawImage(snapshotImage, 0, 0, width, height);
+
+        const xCenter = Math.round((topPoint.x + bottomPoint.x) / 2);
+        const yTop = Math.round(Math.min(topPoint.y, bottomPoint.y));
+        const yBottom = Math.round(Math.max(topPoint.y, bottomPoint.y));
+
+        const scanWidth = 70;
+
+        let bestY = yBottom;
+        let bestScore = 0;
+
+        for (let y = yTop + 3; y < yBottom - 3; y += 1) {
+          let score = 0;
+
+          for (let dx = -scanWidth / 2; dx <= scanWidth / 2; dx += 2) {
+            const x = Math.round(xCenter + dx);
+
+            if (x < 0 || x >= width) continue;
+
+            const above = ctx.getImageData(x, y - 3, 1, 1).data;
+            const below = ctx.getImageData(x, y + 3, 1, 1).data;
+
+            const grayAbove =
+              above[0] * 0.299 +
+              above[1] * 0.587 +
+              above[2] * 0.114;
+
+            const grayBelow =
+              below[0] * 0.299 +
+              below[1] * 0.587 +
+              below[2] * 0.114;
+
+            score += Math.abs(grayAbove - grayBelow);
+          }
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestY = y;
+          }
+        }
+
+        const level = ((yBottom - bestY) / (yBottom - yTop)) * 100;
+        const clampedLevel = Math.max(0, Math.min(100, level));
+
+        setWaterLineY(bestY);
+        setWaterLevel(clampedLevel);
+
+        const lastSent = lastSentLevelRef.current;
+        const diff =
+          lastSent === null ? 999 : Math.abs(clampedLevel - lastSent);
+
+        if (diff >= 0.5) {
+          sendWaterLevelToPLC(clampedLevel);
+          lastSentLevelRef.current = clampedLevel;
+        }
+
+        URL.revokeObjectURL(objectUrl);
+      };
+
+      snapshotImage.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+      };
+
+      snapshotImage.src = objectUrl;
+    } catch (err) {
+      console.log('Water level detection failed:', err);
+    }
+  }, [topPoint, bottomPoint, snapshotUrl, sendWaterLevelToPLC]);
+
+  const handleOverlayClick = useCallback(
+    (e) => {
+      if (!selectMode) return;
+
+      const canvas = overlayCanvasRef.current;
+
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+
+      const point = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+
+      if (selectMode === 'top') {
+        setTopPoint(point);
+        saveCalibration(point, bottomPoint);
+      }
+
+      if (selectMode === 'bottom') {
+        setBottomPoint(point);
+        saveCalibration(topPoint, point);
+      }
+
+      setSelectMode(null);
+    },
+    [selectMode, topPoint, bottomPoint, saveCalibration],
+  );
+
+  const handleResetWaterLevel = useCallback(() => {
+    setTopPoint(null);
+    setBottomPoint(null);
+    setWaterLineY(null);
+    setWaterLevel(0);
+    setSelectMode(null);
+    setSendStatus('Idle');
+    lastSentLevelRef.current = null;
+
+    localStorage.removeItem(calibrationStorageKey);
+  }, [calibrationStorageKey]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      loadCalibration();
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [loadCalibration, streamKey]);
+
+  useEffect(() => {
+    drawOverlay();
+  }, [drawOverlay]);
+
+  useEffect(() => {
+    if (!topPoint || !bottomPoint) return undefined;
+
+    const interval = setInterval(() => {
+      detectWaterLevel();
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [topPoint, bottomPoint, detectWaterLevel]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      loadCalibration();
+      drawOverlay();
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [loadCalibration, drawOverlay]);
 
   return (
     <div className="relative h-[calc(100vh-190px)] min-h-[360px] overflow-hidden rounded-2xl bg-slate-950">
       {!hasError ? (
-        <img
-          key={streamKey}
-          src={streamUrl}
-          alt={camera.camera_name}
-          className="h-full w-full object-contain"
-          onError={onError}
-        />
+        <>
+          <img
+            ref={imageRef}
+            key={streamKey}
+            src={streamUrl}
+            alt={camera.camera_name}
+            className="h-full w-full object-fill"
+            onError={onError}
+            onLoad={() => {
+              loadCalibration();
+              drawOverlay();
+            }}
+          />
+
+          <canvas
+            ref={overlayCanvasRef}
+            onClick={handleOverlayClick}
+            className="absolute inset-0 z-10 h-full w-full cursor-crosshair"
+          />
+
+          <canvas ref={processingCanvasRef} className="hidden" />
+        </>
       ) : (
         <div className="flex h-full flex-col items-center justify-center text-center">
           <div className="text-lg font-black text-white">
@@ -306,7 +676,7 @@ function CameraStreamCard({
         </div>
       )}
 
-      <div className="absolute left-5 top-5 rounded-2xl bg-white/90 px-4 py-3 shadow-sm backdrop-blur">
+      <div className="absolute left-5 top-5 z-20 rounded-2xl bg-white/90 px-4 py-3 shadow-sm backdrop-blur">
         <div className="text-sm font-black text-slate-950">
           {camera.camera_name}
         </div>
@@ -320,10 +690,65 @@ function CameraStreamCard({
       <button
         type="button"
         onClick={onReload}
-        className="absolute right-5 top-5 rounded-xl bg-white/90 px-4 py-2 text-xs font-black text-slate-950 shadow-sm backdrop-blur transition hover:bg-white"
+        className="absolute right-5 top-5 z-20 rounded-xl bg-white/90 px-4 py-2 text-xs font-black text-slate-950 shadow-sm backdrop-blur transition hover:bg-white"
       >
         Reload
       </button>
+
+      <div className="absolute bottom-5 left-5 right-5 z-20 rounded-2xl bg-white/90 p-4 shadow-sm backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-500">
+              Water Level Camera
+            </div>
+
+            <div className="mt-1 text-3xl font-black text-slate-950">
+              {waterLevel.toFixed(1)}%
+            </div>
+
+            <div className="mt-1 text-xs font-bold text-slate-500">
+              PLC Register: %MW160 · {sendStatus}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectMode('top')}
+              className={`rounded-xl px-4 py-2 text-xs font-black text-white ${
+                selectMode === 'top' ? 'bg-green-700' : 'bg-green-600'
+              }`}
+            >
+              Set Top
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectMode('bottom')}
+              className={`rounded-xl px-4 py-2 text-xs font-black text-white ${
+                selectMode === 'bottom' ? 'bg-red-700' : 'bg-red-600'
+              }`}
+            >
+              Set Bottom
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetWaterLevel}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+
+        {selectMode && (
+          <div className="mt-3 rounded-xl bg-blue-50 px-4 py-2 text-xs font-bold text-blue-700">
+            Klik pada gambar kamera untuk memilih titik{' '}
+            {selectMode === 'top' ? 'atas / 100%' : 'bawah / 0%'}.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

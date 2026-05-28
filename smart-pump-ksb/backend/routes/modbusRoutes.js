@@ -3,9 +3,47 @@ const express = require('express');
 const router = express.Router();
 
 const modbusService = require('../services/modbusService');
+
 const { pool } = require('../config/db');
 
 const OPERATOR_PIN = process.env.OPERATOR_PIN || '1234';
+
+let latestWaterLevel = {
+  levelPercent: 0,
+  rawValue: 0,
+  plcAddress: '%MW160',
+  updatedAt: null,
+};
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function writeWaterLevelWithRetry(rawValue, retries = 5) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await modbusService.writeHoldingRegister(160, rawValue);
+    } catch (error) {
+      lastError = error;
+
+      const message = String(error.message || '').toLowerCase();
+
+      const isBusy =
+        message.includes('slave device busy') ||
+        message.includes('exception 6');
+
+      if (!isBusy || attempt === retries) {
+        throw error;
+      }
+
+      await delay(300);
+    }
+  }
+
+  throw lastError;
+}
 
 function validateOperatorPin(operatorPin) {
   if (!operatorPin) {
@@ -925,6 +963,139 @@ router.patch('/tags/:id/enabled', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to update PLC tag status',
+      error: error.message,
+    });
+  }
+});
+
+router.post('/water-level', async (req, res) => {
+  try {
+    const { level } = req.body;
+
+    const numericLevel = Number(level);
+
+    if (!Number.isFinite(numericLevel)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Water level harus angka',
+      });
+    }
+
+    if (numericLevel < 0 || numericLevel > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Water level harus di antara 0 sampai 100 persen',
+      });
+    }
+
+    const rawValue = Math.round(numericLevel * 10);
+
+    const writeResult = await writeWaterLevelWithRetry(rawValue);
+
+    latestWaterLevel = {
+      levelPercent: Number(numericLevel.toFixed(1)),
+      rawValue,
+      plcAddress: '%MW160',
+      updatedAt: new Date().toISOString(),
+      writeResult,
+    };
+
+    return res.json({
+      success: true,
+      message: 'Water level berhasil ditulis ke PLC',
+      data: latestWaterLevel,
+    });
+  } catch (error) {
+    console.error('[WATER LEVEL WRITE ERROR]', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal menulis water level ke PLC',
+      error: error.message,
+    });
+  }
+});
+
+router.get('/water-level/latest', (req, res) => {
+  return res.json({
+    success: true,
+    data: latestWaterLevel,
+  });
+});
+
+router.get('/level-status', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `
+      SELECT
+        mt.id,
+        mt.pump_id,
+        mt.tag_key,
+        mt.label,
+        mt.plc_address,
+        mt.register_address,
+        mt.data_type,
+        lmv.raw_value,
+        lmv.value_number,
+        lmv.value_text,
+        lmv.quality,
+        lmv.updated_at
+      FROM modbus_tags mt
+      LEFT JOIN latest_modbus_values lmv
+        ON lmv.tag_id = mt.id
+      WHERE mt.register_type = 'coil'
+        AND mt.register_address BETWEEN 126 AND 133
+        AND mt.plc_address IS NOT NULL
+        AND mt.is_enabled = 1
+      ORDER BY mt.register_address ASC
+      `
+    );
+
+    const items = rows.map((row) => {
+      const rawText = String(row.raw_value || '').toLowerCase();
+
+      const active =
+        Number(row.value_number) === 1 ||
+        rawText === 'true' ||
+        rawText === '1';
+
+      return {
+        id: row.id,
+        pumpId: row.pump_id,
+        tagKey: row.tag_key,
+        label: row.label,
+        plcAddress: row.plc_address,
+        registerAddress: row.register_address,
+        active,
+        quality: row.quality,
+        updatedAt: row.updated_at,
+      };
+    });
+
+    const llItems = items.filter((item) =>
+      String(item.tagKey || '').toLowerCase().startsWith('ll')
+    );
+
+    const hlItems = items.filter((item) =>
+      String(item.tagKey || '').toLowerCase().startsWith('hl')
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        items,
+        summary: {
+          llActive: llItems.some((item) => item.active),
+          hlActive: hlItems.some((item) => item.active),
+          activeLL: llItems.filter((item) => item.active),
+          activeHL: hlItems.filter((item) => item.active),
+        },
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil status level LL/HL',
       error: error.message,
     });
   }

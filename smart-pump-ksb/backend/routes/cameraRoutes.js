@@ -231,6 +231,60 @@ function streamCameraToResponse(camera, req, res) {
   });
 }
 
+function captureCameraSnapshot(camera) {
+  return new Promise((resolve, reject) => {
+    const rtspUrl = buildRtspUrl(camera);
+
+    if (!ffmpegPath) {
+      return reject(new Error('FFmpeg binary not found. Please install ffmpeg-static.'));
+    }
+
+    const chunks = [];
+
+    const ffmpeg = spawn(ffmpegPath, [
+      '-rtsp_transport',
+      'tcp',
+
+      '-i',
+      rtspUrl,
+
+      '-frames:v',
+      '1',
+
+      '-vf',
+      'scale=854:-1',
+
+      '-f',
+      'image2',
+
+      '-vcodec',
+      'mjpeg',
+
+      'pipe:1',
+    ]);
+
+    ffmpeg.stdout.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+
+    ffmpeg.stderr.on('data', () => {
+      // Uncomment kalau perlu debug:
+      // console.log('[CAMERA SNAPSHOT FFMPEG]', data.toString());
+    });
+
+    ffmpeg.on('error', (error) => {
+      reject(error);
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code !== 0 && chunks.length === 0) {
+        return reject(new Error(`FFmpeg snapshot failed with code ${code}`));
+      }
+
+      resolve(Buffer.concat(chunks));
+    });
+  });
+}
 /**
  * GET /api/camera/mjpeg
  * Stream kamera default / kamera utama.
@@ -313,8 +367,45 @@ router.get('/main', requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/camera/snapshot
+ * Ambil 1 frame kamera utama untuk image processing.
+ */
+router.get('/snapshot', requireAuth, async (req, res) => {
+  try {
+    const camera = await getMainCamera();
+
+    if (!camera) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tidak ada kamera aktif',
+      });
+    }
+
+    const imageBuffer = await captureCameraSnapshot(camera);
+
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+    });
+
+    return res.end(imageBuffer);
+  } catch (error) {
+    console.error('[CAMERA] Snapshot error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil snapshot kamera',
+      error: error.message,
+    });
+  }
+});
+
+/**
  * GET /api/camera/settings
  * Admin: ambil semua setting kamera.
+ * 
+ * 
  */
 router.get('/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -673,6 +764,43 @@ router.get('/:id/mjpeg', requireAuth, async (req, res) => {
     }
 
     res.end();
+  }
+});
+
+/**
+ * GET /api/camera/:id/snapshot
+ * Ambil 1 frame kamera berdasarkan ID.
+ */
+router.get('/:id/snapshot', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const camera = await getCameraById(id);
+
+    if (!camera) {
+      return res.status(404).json({
+        success: false,
+        message: 'Kamera tidak ditemukan atau tidak aktif',
+      });
+    }
+
+    const imageBuffer = await captureCameraSnapshot(camera);
+
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+    });
+
+    return res.end(imageBuffer);
+  } catch (error) {
+    console.error('[CAMERA] Snapshot by ID error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Gagal mengambil snapshot kamera',
+      error: error.message,
+    });
   }
 });
 
