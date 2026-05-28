@@ -26,8 +26,8 @@ export default function CoilsTab({
         </button>
       </div>
 
-      <div className="mt-5 overflow-hidden rounded-xl border border-slate-200">
-        <table className="w-full text-left text-sm">
+      <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
+        <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-slate-100 text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">Tag</th>
@@ -47,21 +47,21 @@ export default function CoilsTab({
               return (
                 <tr key={tag.id} className="align-top">
                   <td className="px-4 py-4">
-                    <div className="font-bold text-slate-900">
+                    <div className="font-semibold text-slate-900">
                       {tag.tag_key}
                     </div>
 
-                    <div className="mt-1 max-w-[220px] text-xs font-semibold text-slate-500">
+                    <div className="mt-1 max-w-[240px] text-xs font-medium text-slate-500">
                       {tag.label}
                     </div>
                   </td>
 
                   <td className="px-4 py-4">
-                    <div className="font-black text-slate-900">
+                    <div className="font-bold text-slate-900">
                       {tag.plc_address || `%M${tag.register_address}`}
                     </div>
 
-                    <div className="mt-1 text-xs font-semibold text-slate-400">
+                    <div className="mt-1 text-xs font-medium text-slate-400">
                       Addr {tag.register_address} · {tag.register_type} · {tag.data_type}
                     </div>
                   </td>
@@ -93,7 +93,7 @@ export default function CoilsTab({
                       className={
                         enabled
                           ? 'rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700'
-                          : 'rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700'
+                          : 'rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500'
                       }
                     >
                       {enabled ? 'Enabled' : 'Disabled'}
@@ -101,41 +101,28 @@ export default function CoilsTab({
                   </td>
 
                   <td className="px-4 py-4 text-right">
-                    <button
-                      type="button"
-                      onClick={() => onToggleTagEnabled?.(tag)}
-                      className={
-                        enabled
-                          ? 'rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-100'
-                          : 'rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100'
-                      }
-                    >
-                      {enabled ? 'Disable' : 'Enable'}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-  <div className="flex justify-end gap-2">
-    <button
-      type="button"
-      onClick={() => onEditTag?.(tag)}
-      className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
-    >
-      Edit
-    </button>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onEditTag?.(tag)}
+                        className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                      >
+                        Edit
+                      </button>
 
-    <button
-      type="button"
-      onClick={() => onToggleTagEnabled?.(tag)}
-      className={
-        Number(tag.is_enabled) === 1
-          ? 'rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-700'
-          : 'rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700'
-      }
-    >
-      {Number(tag.is_enabled) === 1 ? 'Disable' : 'Enable'}
-    </button>
-  </div>
-</td>
+                      <button
+                        type="button"
+                        onClick={() => onToggleTagEnabled?.(tag)}
+                        className={
+                          enabled
+                            ? 'rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-700'
+                            : 'rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700'
+                        }
+                      >
+                        {enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
