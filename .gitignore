@@ -1,0 +1,4 @@
+backup release/
+installer-output/
+smart-ksb-pump-release/
+*.iss
