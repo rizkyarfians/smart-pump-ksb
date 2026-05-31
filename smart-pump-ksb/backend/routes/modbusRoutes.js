@@ -260,6 +260,9 @@ router.post('/tags', async (req, res) => {
       unit,
       scaleValue,
       offsetValue,
+      contactType,
+      byteOrder,
+      wordOrder,
       isReadable,
       isWritable,
       isEnabled,
@@ -268,12 +271,13 @@ router.post('/tags', async (req, res) => {
 
     const pinCheck = validateOperatorPin(operatorPin);
 
-if (!pinCheck.ok) {
-  return res.status(pinCheck.status).json({
-    success: false,
-    message: pinCheck.message,
-  });
-}
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.status).json({
+        success: false,
+        message: pinCheck.message,
+      });
+    }
+
     if (!pumpId) {
       return res.status(400).json({
         success: false,
@@ -311,6 +315,14 @@ if (!pinCheck.ok) {
       });
     }
 
+    const cleanDataType = String(
+      dataType || getDefaultDataType(cleanRegisterType),
+    ).trim().toLowerCase();
+
+    const cleanContactType = normalizeContactType(contactType);
+    const cleanByteOrder = normalizeByteOrder(byteOrder);
+    const cleanWordOrder = normalizeByteOrder(wordOrder);
+
     const cleanPlcAddress = String(plcAddress || '').trim();
 
     const finalRegisterAddress =
@@ -327,7 +339,16 @@ if (!pinCheck.ok) {
       });
     }
 
-    const finalQuantity = Math.max(1, Number(quantity || 1));
+    const is32BitDataType = is32BitType(cleanDataType);
+
+    const finalQuantity =
+      quantity !== undefined &&
+      quantity !== null &&
+      String(quantity).trim() !== ''
+        ? Math.max(1, Number(quantity || 1))
+        : is32BitDataType
+          ? 2
+          : 1;
 
     const readFunctionCode = getReadFunctionCode(cleanRegisterType);
     const writeFunctionCode = getWriteFunctionCode(
@@ -392,6 +413,9 @@ if (!pinCheck.ok) {
         read_function_code,
         write_function_code,
         data_type,
+        contact_type,
+        byte_order,
+        word_order,
         scale_value,
         offset_value,
         unit,
@@ -400,7 +424,7 @@ if (!pinCheck.ok) {
         is_enabled
       )
       VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         Number(deviceId),
@@ -413,7 +437,10 @@ if (!pinCheck.ok) {
         finalQuantity,
         readFunctionCode,
         writeFunctionCode,
-        dataType || getDefaultDataType(cleanRegisterType),
+        cleanDataType,
+        cleanContactType,
+        cleanByteOrder,
+        cleanWordOrder,
         Number(scaleValue ?? 1),
         Number(offsetValue ?? 0),
         unit || null,
@@ -497,9 +524,46 @@ function getDefaultDataType(registerType) {
     return 'bool';
   }
 
-  return 'uint16';
+  return 'float32';
+}
+function getDefaultDataType(registerType) {
+  if (registerType === 'coil' || registerType === 'discrete_input') {
+    return 'bool';
+  }
+
+  return 'float32';
+}
+function is32BitType(dataType) {
+  const cleanDataType = String(dataType || '').toLowerCase();
+
+  return (
+    cleanDataType === 'uint32' ||
+    cleanDataType === 'int32' ||
+    cleanDataType === 'float' ||
+    cleanDataType === 'float32' ||
+    cleanDataType === 'real'
+  );
 }
 
+function normalizeByteOrder(value) {
+  const cleanValue = String(value || 'ABCD').trim().toUpperCase();
+
+  if (['ABCD', 'CDAB', 'BADC', 'DCBA'].includes(cleanValue)) {
+    return cleanValue;
+  }
+
+  return 'ABCD';
+}
+
+function normalizeContactType(value) {
+  const cleanValue = String(value || 'NO').trim().toUpperCase();
+
+  if (['NO', 'NC'].includes(cleanValue)) {
+    return cleanValue;
+  }
+
+  return 'NO';
+}
 router.put('/units/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -564,53 +628,120 @@ if (!pinCheck.ok) {
 });
 
 router.delete('/units/:id/permanent', async (req, res) => {
+  let connection;
+  let transactionStarted = false;
+
   try {
     const { id } = req.params;
-    const { operatorPin } = req.body;
+    const { operatorPin } = req.body || {};
 
-    if (!operatorPin || String(operatorPin).trim() !== '1234') {
+    const pumpId = Number(id);
+
+    if (!Number.isInteger(pumpId) || pumpId <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid operator PIN',
+        message: 'Invalid pump ID',
       });
     }
 
-    await pool.query(
+    const pinCheck = validateOperatorPin(operatorPin);
+
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.status).json({
+        success: false,
+        message: pinCheck.message,
+      });
+    }
+
+    connection = await pool.getConnection();
+
+    const [pumpRows] = await connection.query(
       `
-      DELETE FROM latest_modbus_values
-      WHERE pump_id = ?
+      SELECT id, pump_name, is_enabled
+      FROM pumps
+      WHERE id = ?
+      LIMIT 1
       `,
-      [Number(id)]
+      [pumpId]
     );
 
-    await pool.query(
+    if (pumpRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Pump unit not found',
+      });
+    }
+
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    // 1. Delete latest value kalau tabelnya ada
+    await deleteByPumpIdIfExists(
+      connection,
+      'latest_modbus_values',
+      pumpId
+    );
+
+    // 2. Delete command logs kalau tabelnya ada
+    await deleteByPumpIdIfExists(
+      connection,
+      'pump_command_logs',
+      pumpId
+    );
+
+    // 3. Delete reading values via tag_id
+    // Karena modbus_reading_values biasanya tidak punya pump_id,
+    // tapi punya tag_id yang refer ke modbus_tags.id
+    await connection.query(
+      `
+      DELETE mrv
+      FROM modbus_reading_values mrv
+      INNER JOIN modbus_tags mt ON mt.id = mrv.tag_id
+      WHERE mt.pump_id = ?
+      `,
+      [pumpId]
+    );
+
+    // 4. Delete tags
+    await connection.query(
       `
       DELETE FROM modbus_tags
       WHERE pump_id = ?
       `,
-      [Number(id)]
+      [pumpId]
     );
 
-    await pool.query(
+    // 5. Delete pump
+    await connection.query(
       `
       DELETE FROM pumps
       WHERE id = ?
       `,
-      [Number(id)]
+      [pumpId]
     );
+
+    await connection.commit();
 
     return res.json({
       success: true,
-      message: 'Pump unit deleted permanently',
+      message: 'Pump unit permanently deleted successfully',
     });
   } catch (error) {
-    console.error('[MODBUS] Delete unit failed:', error);
+    if (connection && transactionStarted) {
+      await connection.rollback();
+    }
+
+    console.error('[MODBUS] Permanent delete unit failed:', error);
 
     return res.status(500).json({
       success: false,
-      message: 'Failed to delete pump unit',
+      message: 'Failed to permanently delete pump unit',
       error: error.message,
     });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 });
 
@@ -661,97 +792,97 @@ router.patch('/units/:id/enabled', async (req, res) => {
   }
 });
 
-router.delete('/units/:id/permanent', async (req, res) => {
-  const connection = await pool.getConnection();
+// router.delete('/units/:id/permanent', async (req, res) => {
+//   const connection = await pool.getConnection();
 
-  try {
-    const { id } = req.params;
-    const { operatorPin } = req.body || {};
+//   try {
+//     const { id } = req.params;
+//     const { operatorPin } = req.body || {};
 
-    const pinCheck = validateOperatorPin(operatorPin);
+//     const pinCheck = validateOperatorPin(operatorPin);
 
-    if (!pinCheck.ok) {
-      return res.status(pinCheck.status).json({
-        success: false,
-        message: pinCheck.message,
-      });
-    }
+//     if (!pinCheck.ok) {
+//       return res.status(pinCheck.status).json({
+//         success: false,
+//         message: pinCheck.message,
+//       });
+//     }
 
-    const [pumpRows] = await connection.query(
-      `
-      SELECT id, pump_name, is_enabled
-      FROM pumps
-      WHERE id = ?
-      LIMIT 1
-      `,
-      [Number(id)]
-    );
+//     const [pumpRows] = await connection.query(
+//       `
+//       SELECT id, pump_name, is_enabled
+//       FROM pumps
+//       WHERE id = ?
+//       LIMIT 1
+//       `,
+//       [Number(id)]
+//     );
 
-    if (pumpRows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Pump unit not found',
-      });
-    }
+//     if (pumpRows.length === 0) {
+//       return res.status(404).json({
+//         success: false,
+//         message: 'Pump unit not found',
+//       });
+//     }
 
-    const pump = pumpRows[0];
+//     const pump = pumpRows[0];
 
-    if (Number(pump.is_enabled ?? 1) === 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Disable pump first before permanent delete',
-      });
-    }
+//     if (Number(pump.is_enabled ?? 1) === 1) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Disable pump first before permanent delete',
+//       });
+//     }
 
-    await connection.beginTransaction();
+//     await connection.beginTransaction();
 
-    // Delete latest values
-    await deleteByPumpIdIfExists(connection, 'latest_modbus_values', Number(id));
+//     // Delete latest values
+//     await deleteByPumpIdIfExists(connection, 'latest_modbus_values', Number(id));
 
-    // Delete history values
-    await deleteByPumpIdIfExists(connection, 'modbus_reading_values', Number(id));
+//     // Delete history values
+//     await deleteByPumpIdIfExists(connection, 'modbus_reading_values', Number(id));
 
-    // Delete command logs
-    await deleteByPumpIdIfExists(connection, 'pump_command_logs', Number(id));
+//     // Delete command logs
+//     await deleteByPumpIdIfExists(connection, 'pump_command_logs', Number(id));
 
-    // Delete tags
-    await connection.query(
-      `
-      DELETE FROM modbus_tags
-      WHERE pump_id = ?
-      `,
-      [Number(id)]
-    );
+//     // Delete tags
+//     await connection.query(
+//       `
+//       DELETE FROM modbus_tags
+//       WHERE pump_id = ?
+//       `,
+//       [Number(id)]
+//     );
 
-    // Delete pump
-    await connection.query(
-      `
-      DELETE FROM pumps
-      WHERE id = ?
-      `,
-      [Number(id)]
-    );
+//     // Delete pump
+//     await connection.query(
+//       `
+//       DELETE FROM pumps
+//       WHERE id = ?
+//       `,
+//       [Number(id)]
+//     );
 
-    await connection.commit();
+//     await connection.commit();
 
-    return res.json({
-      success: true,
-      message: 'Pump unit permanently deleted successfully',
-    });
-  } catch (error) {
-    await connection.rollback();
+//     return res.json({
+//       success: true,
+//       message: 'Pump unit permanently deleted successfully',
+//     });
+//   } catch (error) {
+//     await connection.rollback();
 
-    console.error('[MODBUS] Permanent delete unit failed:', error);
+//     console.error('[MODBUS] Permanent delete unit failed:', error);
 
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to permanently delete pump unit',
-      error: error.message,
-    });
-  } finally {
-    connection.release();
-  }
-});
+//     return res.status(500).json({
+//       success: false,
+//       message: 'Failed to permanently delete pump unit',
+//       error: error.message,
+//     });
+//   } finally {
+//     connection.release();
+//   }
+// });
 
 async function deleteByPumpIdIfExists(connection, tableName, pumpId) {
   const [columns] = await connection.query(
@@ -793,10 +924,23 @@ router.put('/tags/:id', async (req, res) => {
       unit,
       scaleValue,
       offsetValue,
+      contactType,
+      byteOrder,
+      wordOrder,
       isReadable,
       isWritable,
       isEnabled,
+      operatorPin,
     } = req.body;
+
+    const pinCheck = validateOperatorPin(operatorPin);
+
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.status).json({
+        success: false,
+        message: pinCheck.message,
+      });
+    }
 
     if (!tagKey || !String(tagKey).trim()) {
       return res.status(400).json({
@@ -828,6 +972,14 @@ router.put('/tags/:id', async (req, res) => {
       });
     }
 
+    const cleanDataType = String(
+      dataType || getDefaultDataType(cleanRegisterType),
+    ).trim().toLowerCase();
+
+    const cleanContactType = normalizeContactType(contactType);
+    const cleanByteOrder = normalizeByteOrder(byteOrder);
+    const cleanWordOrder = normalizeByteOrder(wordOrder);
+
     const finalRegisterAddress = Number(registerAddress);
 
     if (!Number.isFinite(finalRegisterAddress) || finalRegisterAddress < 0) {
@@ -836,6 +988,17 @@ router.put('/tags/:id', async (req, res) => {
         message: 'Invalid register address',
       });
     }
+
+    const is32BitDataType = is32BitType(cleanDataType);
+
+    const finalQuantity =
+      quantity !== undefined &&
+      quantity !== null &&
+      String(quantity).trim() !== ''
+        ? Math.max(1, Number(quantity || 1))
+        : is32BitDataType
+          ? 2
+          : 1;
 
     const readFunctionCode = getReadFunctionCode(cleanRegisterType);
     const writeFunctionCode = getWriteFunctionCode(
@@ -882,6 +1045,9 @@ router.put('/tags/:id', async (req, res) => {
         read_function_code = ?,
         write_function_code = ?,
         data_type = ?,
+        contact_type = ?,
+        byte_order = ?,
+        word_order = ?,
         scale_value = ?,
         offset_value = ?,
         unit = ?,
@@ -898,10 +1064,13 @@ router.put('/tags/:id', async (req, res) => {
         cleanRegisterType,
         plcAddress || buildPlcAddress(cleanRegisterType, finalRegisterAddress),
         finalRegisterAddress,
-        Math.max(1, Number(quantity || 1)),
+        finalQuantity,
         readFunctionCode,
         writeFunctionCode,
-        dataType || getDefaultDataType(cleanRegisterType),
+        cleanDataType,
+        cleanContactType,
+        cleanByteOrder,
+        cleanWordOrder,
         Number(scaleValue ?? 1),
         Number(offsetValue ?? 0),
         unit || null,
@@ -936,7 +1105,6 @@ router.put('/tags/:id', async (req, res) => {
     });
   }
 });
-
 router.patch('/tags/:id/enabled', async (req, res) => {
   try {
     const { id } = req.params;
@@ -1096,6 +1264,92 @@ router.get('/level-status', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Gagal mengambil status level LL/HL',
+      error: error.message,
+    });
+  }
+});
+
+router.patch('/tags/:id/contact-type', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contactType, operatorPin } = req.body;
+
+    const pinCheck = validateOperatorPin(operatorPin);
+
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.status).json({
+        success: false,
+        message: pinCheck.message,
+      });
+    }
+
+    const cleanContactType = String(contactType || '').trim().toUpperCase();
+
+    if (!['NO', 'NC'].includes(cleanContactType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid contact type. Use NO or NC.',
+      });
+    }
+
+    const [tagRows] = await pool.query(
+      `
+      SELECT id, register_type
+      FROM modbus_tags
+      WHERE id = ?
+      LIMIT 1
+      `,
+      [Number(id)],
+    );
+
+    if (tagRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'PLC tag not found',
+      });
+    }
+
+    const registerType = String(tagRows[0].register_type || '').toLowerCase();
+
+    const isBooleanTag =
+      registerType === 'coil' || registerType === 'discrete_input';
+
+    if (!isBooleanTag) {
+      return res.status(400).json({
+        success: false,
+        message: 'Contact type only applies to coil or discrete input tags',
+      });
+    }
+
+    await pool.query(
+      `
+      UPDATE modbus_tags
+      SET contact_type = ?
+      WHERE id = ?
+      `,
+      [cleanContactType, Number(id)],
+    );
+
+    const [rows] = await pool.query(
+      `
+      SELECT *
+      FROM modbus_tags
+      WHERE id = ?
+      `,
+      [Number(id)],
+    );
+
+    return res.json({
+      success: true,
+      message: `Contact type updated to ${cleanContactType}`,
+      data: rows[0],
+    });
+  } catch (error) {
+    console.error('[MODBUS] Update contact type failed:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update contact type',
       error: error.message,
     });
   }

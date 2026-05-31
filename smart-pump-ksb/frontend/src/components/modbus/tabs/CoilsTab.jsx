@@ -3,6 +3,7 @@ export default function CoilsTab({
   onAddCoil,
   onEditTag,
   onToggleTagEnabled,
+  onToggleContactType,
 }) {
   return (
     <div>
@@ -27,11 +28,12 @@ export default function CoilsTab({
       </div>
 
       <div className="mt-5 overflow-x-auto rounded-xl border border-slate-200">
-        <table className="w-full min-w-[980px] text-left text-sm">
+        <table className="w-full min-w-[1080px] text-left text-sm">
           <thead className="bg-slate-100 text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">Tag</th>
               <th className="px-4 py-3">PLC Address</th>
+              <th className="px-4 py-3">Contact</th>
               <th className="px-4 py-3">Access</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Action</th>
@@ -43,6 +45,12 @@ export default function CoilsTab({
               const enabled = Number(tag.is_enabled) === 1;
               const readable = Number(tag.is_readable) === 1;
               const writable = Number(tag.is_writable) === 1;
+
+              const contactType = String(
+                tag.contact_type || tag.contactType || 'NO',
+              ).toUpperCase();
+
+              const isNC = contactType === 'NC';
 
               return (
                 <tr key={tag.id} className="align-top">
@@ -62,9 +70,28 @@ export default function CoilsTab({
                     </div>
 
                     <div className="mt-1 text-xs font-medium text-slate-400">
-                      Addr {tag.register_address} · {tag.register_type} · {tag.data_type}
+                      Addr {tag.register_address} · {tag.register_type} ·{' '}
+                      {tag.data_type}
                     </div>
                   </td>
+
+                 <td className="px-4 py-4">
+  <button
+    type="button"
+    onClick={() => onToggleContactType?.(tag)}
+    className={
+      isNC
+        ? 'rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-violet-700'
+        : 'rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100'
+    }
+  >
+    {isNC ? 'NC' : 'NO'}
+  </button>
+
+  <div className="mt-1 text-xs font-medium text-slate-400">
+    {isNC ? 'Active when 0' : 'Active when 1'}
+  </div>
+</td>
 
                   <td className="px-4 py-4">
                     <div className="flex flex-wrap gap-2">
@@ -130,7 +157,7 @@ export default function CoilsTab({
             {coilRows.length === 0 && (
               <tr>
                 <td
-                  colSpan="5"
+                  colSpan="6"
                   className="px-4 py-6 text-center text-sm font-semibold text-slate-400"
                 >
                   No coil or command mapping found for this unit.

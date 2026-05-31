@@ -37,18 +37,46 @@ const ALARM_RULES = {
   },
 };
 
+let alarmSyncRunning = false;
+
+function syncAlarmEventsInBackground(items) {
+  if (alarmSyncRunning) {
+    return;
+  }
+
+  alarmSyncRunning = true;
+
+  syncAlarmEvents(items)
+    .catch((error) => {
+      console.error('[ALARMS] Background sync failed:', error.message);
+    })
+    .finally(() => {
+      alarmSyncRunning = false;
+    });
+}
+
+/**
+ * GET /api/alarms/summary
+ *
+ * Ambil alarm realtime untuk dashboard.
+ * Catatan penting:
+ * syncAlarmEvents sengaja jalan background, bukan await,
+ * supaya dashboard tidak ikut lambat/macet saat alarm aktif.
+ */
 router.get('/summary', async (req, res) => {
   try {
     const items = await getRealtimeAlarmItems();
 
-    await syncAlarmEvents(items);
+    syncAlarmEventsInBackground(items);
 
     const activeItems = items.filter((item) => item.status === 'ACTIVE');
 
     const summary = {
       alarm: activeItems.filter((item) => item.alarmType === 'ALARM').length,
       warning: activeItems.filter((item) => item.alarmType === 'WARNING').length,
-      information: activeItems.filter((item) => item.alarmType === 'INFORMATION').length,
+      information: activeItems.filter(
+        (item) => item.alarmType === 'INFORMATION',
+      ).length,
     };
 
     return res.json({
@@ -71,13 +99,20 @@ router.get('/summary', async (req, res) => {
 
 /**
  * GET /api/alarms/logs
+ *
  * Ambil history alarm dari tabel alarm_events.
- * Sebelum baca history, sinkronkan dulu alarm realtime.
+ * Sebelum baca history, coba sinkronkan alarm realtime.
+ * Kalau sync gagal, logs tetap dibaca agar halaman tidak mati total.
  */
 router.get('/logs', async (req, res) => {
   try {
     const liveItems = await getRealtimeAlarmItems();
-    await syncAlarmEvents(liveItems);
+
+    try {
+      await syncAlarmEvents(liveItems);
+    } catch (syncError) {
+      console.error('[ALARMS] Sync before logs failed:', syncError.message);
+    }
 
     const {
       pump_id,
@@ -155,7 +190,7 @@ router.get('/logs', async (req, res) => {
       ORDER BY ae.started_at DESC, ae.id DESC
       LIMIT ? OFFSET ?
       `,
-      [...params, safeLimit, safeOffset]
+      [...params, safeLimit, safeOffset],
     );
 
     return res.json({
@@ -172,25 +207,30 @@ router.get('/logs', async (req, res) => {
     });
   }
 });
+
 async function getRealtimeAlarmItems() {
   const [rows] = await pool.query(`
     SELECT
       p.id AS pump_id,
       p.pump_name,
       p.pump_code,
+
       t.id AS tag_id,
       t.tag_key,
       t.label,
       t.plc_address,
       t.register_type,
       t.register_address,
+
       l.raw_value,
       l.value_number,
       l.value_text,
       l.updated_at
+
     FROM latest_modbus_values l
     JOIN pumps p ON p.id = l.pump_id
     JOIN modbus_tags t ON t.id = l.tag_id
+
     WHERE t.is_enabled = 1
       AND t.tag_key IN (
         'vsd_alarm',
@@ -200,6 +240,7 @@ async function getRealtimeAlarmItems() {
         'remote',
         'vsd_run'
       )
+
     ORDER BY l.updated_at DESC
   `);
 
@@ -213,7 +254,7 @@ async function getRealtimeAlarmItems() {
       const value = normalizeValue(
         row.value_number,
         row.value_text,
-        row.raw_value
+        row.raw_value,
       );
 
       const isActive = Number(value) === Number(rule.activeWhen);
@@ -222,25 +263,38 @@ async function getRealtimeAlarmItems() {
         pumpId: row.pump_id,
         pumpName: row.pump_name,
         pumpCode: row.pump_code,
+
         tagId: row.tag_id,
         tagKey: row.tag_key,
+
         alarmType: rule.type,
         alarmKey: row.tag_key,
         alarmText: rule.text(row.pump_name),
+
         status: isActive ? 'ACTIVE' : 'NOT_ACTIVE',
+
         value,
         rawValue: row.raw_value,
         updatedAt: row.updated_at,
+
         date: formatDate(row.updated_at),
         time: formatTime(row.updated_at),
       };
     })
     .filter(Boolean);
 }
+
 /**
  * Sinkronkan kondisi realtime ke tabel alarm_events.
- * - Jika alarm ACTIVE dan belum ada event ACTIVE, insert event baru.
- * - Jika alarm NOT_ACTIVE dan sebelumnya ada event ACTIVE, tutup event dengan ended_at.
+ *
+ * - Jika alarm ACTIVE dan belum ada event ACTIVE:
+ *   insert event baru.
+ *
+ * - Jika alarm ACTIVE dan event ACTIVE sudah ada:
+ *   update value saja.
+ *
+ * - Jika alarm NOT_ACTIVE dan sebelumnya ada event ACTIVE:
+ *   tutup event dengan ended_at.
  */
 async function syncAlarmEvents(items) {
   for (const item of items) {
@@ -261,7 +315,7 @@ async function syncAlarmEvents(items) {
           AND status = 'ACTIVE'
         LIMIT 1
         `,
-        [item.pumpId, item.tagId, alarmKey]
+        [item.pumpId, item.tagId, alarmKey],
       );
 
       if (activeRows.length === 0) {
@@ -278,7 +332,8 @@ async function syncAlarmEvents(items) {
             raw_value,
             started_at,
             ended_at
-          ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, NULL)
+          )
+          VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, NULL)
           `,
           [
             item.pumpId,
@@ -289,7 +344,7 @@ async function syncAlarmEvents(items) {
             Number(item.value),
             item.rawValue ?? null,
             toMysqlDateTime(item.updatedAt) || getNowMysqlDateTime(),
-          ]
+          ],
         );
       } else {
         await pool.query(
@@ -305,7 +360,7 @@ async function syncAlarmEvents(items) {
             Number(item.value),
             item.rawValue ?? null,
             activeRows[0].id,
-          ]
+          ],
         );
       }
     }
@@ -332,7 +387,7 @@ async function syncAlarmEvents(items) {
           item.pumpId,
           item.tagId,
           alarmKey,
-        ]
+        ],
       );
     }
   }
@@ -345,11 +400,21 @@ function normalizeValue(valueNumber, valueText, rawValue) {
 
   const text = String(valueText ?? rawValue ?? '').trim().toLowerCase();
 
-  if (text === 'true' || text === '1' || text === 'on' || text === 'active') {
+  if (
+    text === 'true' ||
+    text === '1' ||
+    text === 'on' ||
+    text === 'active'
+  ) {
     return 1;
   }
 
-  if (text === 'false' || text === '0' || text === 'off' || text === 'not_active') {
+  if (
+    text === 'false' ||
+    text === '0' ||
+    text === 'off' ||
+    text === 'not_active'
+  ) {
     return 0;
   }
 
@@ -382,7 +447,9 @@ function formatTime(value) {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-  }).format(date).replace(/\./g, ':');
+  })
+    .format(date)
+    .replace(/\./g, ':');
 }
 
 function toMysqlDateTime(value) {
@@ -394,15 +461,19 @@ function toMysqlDateTime(value) {
 
   const pad = (num) => String(num).padStart(2, '0');
 
-  return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
-  ].join('-') + ' ' + [
-    pad(date.getHours()),
-    pad(date.getMinutes()),
-    pad(date.getSeconds()),
-  ].join(':');
+  return (
+    [
+      date.getFullYear(),
+      pad(date.getMonth() + 1),
+      pad(date.getDate()),
+    ].join('-') +
+    ' ' +
+    [
+      pad(date.getHours()),
+      pad(date.getMinutes()),
+      pad(date.getSeconds()),
+    ].join(':')
+  );
 }
 
 function getNowMysqlDateTime() {

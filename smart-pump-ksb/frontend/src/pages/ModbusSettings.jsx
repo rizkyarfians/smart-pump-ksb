@@ -52,30 +52,31 @@ export default function ModbusSettings() {
 
       {modbus.isEditorOpen && (
         <UnitConfigModal
-          form={modbus.form}
-          selectedPump={modbus.selectedPump}
-          selectedPumpId={modbus.selectedPumpId}
-          pumps={modbus.pumps}
-          tags={modbus.selectedPumpTags}
-          liveRows={modbus.liveRows}
-          coilRows={modbus.coilRows}
-          activeTab={modbus.activeTab}
-          liveLoading={modbus.liveLoading}
-          loading={modbus.loading}
-          testResult={modbus.visibleConnectionResult}
-          connectionStatus={modbus.selectedConnectionStatus}
-          onTabChange={modbus.setActiveTab}
-          onClose={() => modbus.setIsEditorOpen(false)}
-          onSelectPump={modbus.setSelectedPumpId}
-          onRefreshLive={modbus.refreshLatestValues}
-          onTestConnection={modbus.testConnection}
-          onSaveConfig={modbus.saveConfig}
-          onUpdateField={modbus.updateField}
-          onAddRegister={() => modbus.openAddTagModal('register')}
-          onAddCoil={() => modbus.openAddTagModal('coil')}
-          onEditTag={modbus.openEditTagModal}
-          onToggleTagEnabled={modbus.handleToggleTagEnabled}
-        />
+  form={modbus.form}
+  selectedPump={modbus.selectedPump}
+  selectedPumpId={modbus.selectedPumpId}
+  pumps={modbus.pumps}
+  tags={modbus.selectedPumpTags}
+  liveRows={modbus.liveRows}
+  coilRows={modbus.coilRows}
+  activeTab={modbus.activeTab}
+  liveLoading={modbus.liveLoading}
+  loading={modbus.loading}
+  testResult={modbus.visibleConnectionResult}
+  connectionStatus={modbus.selectedConnectionStatus}
+  onTabChange={modbus.setActiveTab}
+  onClose={() => modbus.setIsEditorOpen(false)}
+  onSelectPump={modbus.setSelectedPumpId}
+  onRefreshLive={modbus.refreshLatestValues}
+  onTestConnection={modbus.testConnection}
+  onSaveConfig={modbus.saveConfig}
+  onUpdateField={modbus.updateField}
+  onAddRegister={() => modbus.openAddTagModal('register')}
+  onAddCoil={() => modbus.openAddTagModal('coil')}
+  onEditTag={modbus.openEditTagModal}
+  onToggleTagEnabled={modbus.handleToggleTagEnabled}
+  onToggleContactType={modbus.handleToggleContactType}
+/>
       )}
 
       {modbus.isAddUnitOpen && (

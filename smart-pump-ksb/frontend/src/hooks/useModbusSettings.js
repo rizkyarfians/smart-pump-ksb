@@ -7,6 +7,7 @@ import {
   disablePumpUnit,
   fetchLatestModbusValues,
   fetchModbusSettingsData,
+  setPlcTagContactType,
   setPlcTagEnabled,
   testModbusConnection,
   updateModbusDevice,
@@ -341,15 +342,25 @@ export default function useModbusSettings() {
       setTagModalType(type);
 
       setNewTag({
-        ...DEFAULT_TAG_FORM,
-        pumpId: String(pumpId),
-        registerType: isCoil ? 'coil' : 'holding_register',
-        dataType: isCoil ? 'bool' : 'uint16',
-        quantity: 1,
-        isReadable: true,
-        isWritable: false,
-        isEnabled: true,
-      });
+  ...DEFAULT_TAG_FORM,
+  pumpId: String(pumpId),
+
+  registerType: isCoil ? 'coil' : 'holding_register',
+  dataType: isCoil ? 'bool' : 'float32',
+  quantity: isCoil ? 1 : 2,
+
+  unit: '',
+  scaleValue: 1,
+  offsetValue: 0,
+
+  contactType: 'NO',
+  byteOrder: 'ABCD',
+  wordOrder: 'ABCD',
+
+  isReadable: true,
+  isWritable: false,
+  isEnabled: true,
+});
 
       setIsTagModalOpen(true);
     },
@@ -371,46 +382,55 @@ export default function useModbusSettings() {
     setTagModalType(isCoil ? 'coil' : 'register');
 
     setNewTag({
-      pumpId: String(tag.pump_id || ''),
-      tagKey: tag.tag_key || '',
-      label: tag.label || '',
-      plcAddress: tag.plc_address || '',
-      registerAddress: tag.register_address ?? '',
-      registerType: tag.register_type || (isCoil ? 'coil' : 'holding_register'),
-      dataType: tag.data_type || (isCoil ? 'bool' : 'uint16'),
-      quantity: tag.quantity || 1,
-      unit: tag.unit || '',
-      scaleValue: tag.scale_value ?? 1,
-      offsetValue: tag.offset_value ?? 0,
-      isReadable: Number(tag.is_readable) === 1,
-      isWritable: Number(tag.is_writable) === 1,
-      isEnabled: Number(tag.is_enabled) === 1,
-    });
+  pumpId: String(tag.pump_id || ''),
+  tagKey: tag.tag_key || '',
+  label: tag.label || '',
+  plcAddress: tag.plc_address || '',
+  registerAddress: tag.register_address ?? '',
+  registerType: tag.register_type || (isCoil ? 'coil' : 'holding_register'),
+  dataType: tag.data_type || (isCoil ? 'bool' : 'float32'),
+  quantity: tag.quantity || (isCoil ? 1 : 2),
+  unit: tag.unit || '',
+  scaleValue: tag.scale_value ?? 1,
+  offsetValue: tag.offset_value ?? 0,
 
+  contactType: tag.contact_type || tag.contactType || 'NO',
+  byteOrder: tag.byte_order || tag.byteOrder || 'ABCD',
+  wordOrder: tag.word_order || tag.wordOrder || 'ABCD',
+
+  isReadable: Number(tag.is_readable) === 1,
+  isWritable: Number(tag.is_writable) === 1,
+  isEnabled: Number(tag.is_enabled) === 1,
+});
     setIsTagModalOpen(true);
   }, []);
 
   const buildTagPayload = useCallback(
-    (operatorPin = '') => ({
-      pumpId: newTag.pumpId,
-      deviceId: form.id || 1,
-      tagKey: newTag.tagKey,
-      label: newTag.label,
-      plcAddress: newTag.plcAddress,
-      registerAddress: newTag.registerAddress,
-      registerType: newTag.registerType,
-      dataType: newTag.dataType,
-      quantity: Number(newTag.quantity || 1),
-      unit: newTag.unit,
-      scaleValue: Number(newTag.scaleValue ?? 1),
-      offsetValue: Number(newTag.offsetValue ?? 0),
-      isReadable: Boolean(newTag.isReadable),
-      isWritable: Boolean(newTag.isWritable),
-      isEnabled: Boolean(newTag.isEnabled),
-      operatorPin,
-    }),
-    [newTag, form.id],
-  );
+  (operatorPin = '') => ({
+    pumpId: newTag.pumpId,
+    deviceId: form.id || 1,
+    tagKey: newTag.tagKey,
+    label: newTag.label,
+    plcAddress: newTag.plcAddress,
+    registerAddress: newTag.registerAddress,
+    registerType: newTag.registerType,
+    dataType: newTag.dataType,
+    quantity: Number(newTag.quantity || 1),
+    unit: newTag.unit,
+    scaleValue: Number(newTag.scaleValue ?? 1),
+    offsetValue: Number(newTag.offsetValue ?? 0),
+
+    contactType: newTag.contactType || 'NO',
+    byteOrder: newTag.byteOrder || 'ABCD',
+    wordOrder: newTag.wordOrder || 'ABCD',
+
+    isReadable: Boolean(newTag.isReadable),
+    isWritable: Boolean(newTag.isWritable),
+    isEnabled: Boolean(newTag.isEnabled),
+    operatorPin,
+  }),
+  [newTag, form.id],
+);
 
   const saveTagWithPin = useCallback(
     async (operatorPin) => {
@@ -773,8 +793,51 @@ const handleDeleteUnit = useCallback(
   },
   [openSettingAction, deleteUnitWithPin],
 );
+const toggleContactTypeWithPin = useCallback(
+  async (tag, operatorPin) => {
+    const currentContactType = String(
+      tag.contact_type || tag.contactType || 'NO',
+    ).toUpperCase();
 
+    const nextContactType = currentContactType === 'NC' ? 'NO' : 'NC';
 
+    const res = await setPlcTagContactType(
+      tag.id,
+      nextContactType,
+      operatorPin,
+    );
+
+    if (!res?.success) {
+      throw new Error(res?.message || 'Failed to update contact type');
+    }
+
+    await refreshSettingsAndLatest();
+
+    setTestResult({
+      success: true,
+      message: `Contact type ${tag.tag_key} berhasil diubah ke ${nextContactType}`,
+    });
+  },
+  [refreshSettingsAndLatest],
+);
+
+const handleToggleContactType = useCallback(
+  (tag) => {
+    const currentContactType = String(
+      tag.contact_type || tag.contactType || 'NO',
+    ).toUpperCase();
+
+    const nextContactType = currentContactType === 'NC' ? 'NO' : 'NC';
+
+    openSettingAction({
+      title: 'Confirm Contact Type Change',
+      description: `Masukkan PIN untuk mengubah contact type "${tag.tag_key}" dari ${currentContactType} ke ${nextContactType}.`,
+      onConfirm: (operatorPin) =>
+        toggleContactTypeWithPin(tag, operatorPin),
+    });
+  },
+  [openSettingAction, toggleContactTypeWithPin],
+);
 
   return {
     form,
@@ -846,6 +909,7 @@ const handleDeleteUnit = useCallback(
     handleSaveTag,
     handleAddTag,
     handleToggleTagEnabled,
+handleToggleContactType,
 
     testConnection,
     saveConfig,

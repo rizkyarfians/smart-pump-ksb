@@ -135,17 +135,15 @@ async function readHoldingRegister(address, quantity = 1) {
   }
 
   const realAddress = normalizeRegisterAddress(address);
+  const finalQuantity = Math.max(1, Number(quantity || 1));
 
   console.log('[MODBUS HREG READ]', {
     inputAddress: address,
     realAddress,
-    quantity,
+    quantity: finalQuantity,
   });
 
-  const result = await client.readHoldingRegisters(
-    realAddress,
-    Number(quantity),
-  );
+  const result = await client.readHoldingRegisters(realAddress, finalQuantity);
 
   return result.data;
 }
@@ -157,17 +155,6 @@ async function readCoil(address, quantity = 1) {
 
   const targetAddress = Number(address);
 
-  /*
-   * Untuk %M100 dst:
-   * baca dari base 100 lalu ambil index sesuai target.
-   *
-   * M100 => index 0
-   * M101 => index 1
-   * M104 => index 4
-   * M150 => index 50
-   *
-   * Ini membuat setiap bit %M terbaca sendiri-sendiri.
-   */
   const baseAddress = targetAddress >= 100 ? 100 : targetAddress;
   const selectedIndex = targetAddress - baseAddress;
   const readQuantity = Math.max(1, selectedIndex + 1);
@@ -185,8 +172,9 @@ async function readDiscreteInput(address, quantity = 1) {
   }
 
   const targetAddress = Number(address);
+  const finalQuantity = Math.max(1, Number(quantity || 1));
 
-  const result = await client.readDiscreteInputs(targetAddress, Number(quantity));
+  const result = await client.readDiscreteInputs(targetAddress, finalQuantity);
 
   return result.data;
 }
@@ -358,45 +346,46 @@ async function pollDevice(device) {
     return;
   }
 
- const [tags] = await db.query(
-  `
-  SELECT
-    id,
-    modbus_device_id,
-    pump_id,
-    tag_key,
-    label,
-    plc_address,
-    register_type,
-    register_address,
-    quantity,
-    read_function_code,
-    data_type,
-    scale_value,
-    offset_value,
-    unit,
-    is_readable,
-    is_writable,
-    is_enabled,
-    byte_order,
-    word_order
-  FROM modbus_tags
-  WHERE modbus_device_id = ?
-    AND is_enabled = 1
-    AND is_readable = 1
-    AND LOWER(tag_key) NOT IN (
-      'start',
-      'stop',
-      'reset',
-      'reset_alarm',
-      'start_command',
-      'stop_command',
-      'reset_command'
-    )
-  ORDER BY register_address ASC
-  `,
-  [device.id],
-);
+  const [tags] = await db.query(
+    `
+    SELECT
+      id,
+      modbus_device_id,
+      pump_id,
+      tag_key,
+      label,
+      plc_address,
+      register_type,
+      register_address,
+      quantity,
+      read_function_code,
+      data_type,
+      scale_value,
+      offset_value,
+      unit,
+      is_readable,
+      is_writable,
+      is_enabled,
+      contact_type,
+      byte_order,
+      word_order
+    FROM modbus_tags
+    WHERE modbus_device_id = ?
+      AND is_enabled = 1
+      AND is_readable = 1
+      AND LOWER(tag_key) NOT IN (
+        'start',
+        'stop',
+        'reset',
+        'reset_alarm',
+        'start_command',
+        'stop_command',
+        'reset_command'
+      )
+    ORDER BY register_address ASC
+    `,
+    [device.id],
+  );
 
   const [batchResult] = await db.query(
     `
@@ -411,59 +400,64 @@ async function pollDevice(device) {
   const batchId = batchResult.insertId;
 
   for (const tag of tags) {
-  try {
-    const rawData = await readTag(tag);
-    const parsedValue = parseTagValue(rawData, tag);
+    try {
+      const rawData = await readTag(tag);
+      const parsedValue = parseTagValue(rawData, tag);
 
-    if (shouldDebugTag(tag)) {
-      console.log('[MODBUS READ DEBUG]', {
-        pumpId: tag.pump_id,
-        tagKey: tag.tag_key,
-        label: tag.label,
-        plcAddress: tag.plc_address,
-        dbAddress: tag.register_address,
-        realAddress: getDebugRealAddress(tag),
-        registerType: tag.register_type,
-        quantity: tag.quantity,
-        readFunctionCode: tag.read_function_code,
-        dataType: tag.data_type,
-        scale: tag.scale_value,
-        offset: tag.offset_value,
+      if (shouldDebugTag(tag)) {
+        console.log('[MODBUS READ DEBUG]', {
+          pumpId: tag.pump_id,
+          tagKey: tag.tag_key,
+          label: tag.label,
+          plcAddress: tag.plc_address,
+          dbAddress: tag.register_address,
+          realAddress: getDebugRealAddress(tag),
+          registerType: tag.register_type,
+          quantity: tag.quantity,
+          readFunctionCode: tag.read_function_code,
+          dataType: tag.data_type,
+          byteOrder: tag.byte_order,
+          wordOrder: tag.word_order,
+          contactType: tag.contact_type,
+          scale: tag.scale_value,
+          offset: tag.offset_value,
+          rawData,
+          parsedValue,
+          unit: tag.unit,
+        });
+      }
+
+      await saveReadingValue({
+        batchId,
+        tag,
         rawData,
         parsedValue,
-        unit: tag.unit,
       });
+
+      await delay(100);
+    } catch (error) {
+      console.error('[MODBUS] Read tag failed:', {
+        id: tag.id,
+        pumpId: tag.pump_id,
+        tag: tag.tag_key,
+        label: tag.label,
+        plcAddress: tag.plc_address,
+        address: tag.register_address,
+        type: tag.register_type,
+        function_code: tag.read_function_code,
+        readable: tag.is_readable,
+        enabled: tag.is_enabled,
+        dataType: tag.data_type,
+        byteOrder: tag.byte_order,
+        wordOrder: tag.word_order,
+        contactType: tag.contact_type,
+        error: error.message,
+      });
+
+      await delay(100);
+      continue;
     }
-
-    await saveReadingValue({
-      batchId,
-      tag,
-      rawData,
-      parsedValue,
-    });
-
-    await delay(100);
-  } catch (error) {
-    console.error('[MODBUS] Read tag failed:', {
-      id: tag.id,
-      pumpId: tag.pump_id,
-      tag: tag.tag_key,
-      label: tag.label,
-      plcAddress: tag.plc_address,
-      address: tag.register_address,
-      type: tag.register_type,
-      function_code: tag.read_function_code,
-      readable: tag.is_readable,
-      enabled: tag.is_enabled,
-      error: error.message,
-    });
-
-    // Jangan close client di sini.
-    // Kalau diclose lalu loop lanjut, bisa muncul ERR_STREAM_WRITE_AFTER_END.
-    await delay(100);
-    continue;
   }
-}
 }
 
 async function readTag(tag) {
@@ -497,24 +491,37 @@ function parseTagValue(rawData, tag) {
   const registerType = String(tag.register_type || '').toLowerCase();
   const dataType = String(tag.data_type || 'uint16').toLowerCase();
 
-  if (
+  const isBoolTag =
     dataType === 'bool' ||
     dataType === 'boolean' ||
     registerType === 'coil' ||
     registerType === 'coils' ||
     registerType === 'discrete_input' ||
-    registerType === 'discrete_inputs'
-  ) {
-    return rawData[0] ? 1 : 0;
+    registerType === 'discrete_inputs';
+
+  if (isBoolTag) {
+    return parseBooleanValue(rawData[0], tag);
   }
 
   let rawValue;
 
- if (dataType === 'uint32' || dataType === 'int32') {
-  rawValue = combineWords(rawData[0], rawData[1], tag.word_order);
-} else {
-  rawValue = Number(rawData[0]);
-}
+  if (dataType === 'uint16') {
+    rawValue = parseUInt16(rawData[0]);
+  } else if (dataType === 'int16') {
+    rawValue = parseInt16(rawData[0]);
+  } else if (dataType === 'uint32') {
+    rawValue = parseUInt32(rawData, tag);
+  } else if (dataType === 'int32') {
+    rawValue = parseInt32(rawData, tag);
+  } else if (
+    dataType === 'float' ||
+    dataType === 'float32' ||
+    dataType === 'real'
+  ) {
+    rawValue = parseFloat32(rawData, tag);
+  } else {
+    rawValue = Number(rawData[0]);
+  }
 
   const scale = Number(tag.scale_value ?? 1);
   const offset = Number(tag.offset_value ?? 0);
@@ -522,17 +529,110 @@ function parseTagValue(rawData, tag) {
   return rawValue * scale + offset;
 }
 
-function combineWords(word1, word2, wordOrder = 'ABCD') {
-  const high = Number(word1) & 0xffff;
-  const low = Number(word2) & 0xffff;
+function parseBooleanValue(rawValue, tag) {
+  const rawNumber =
+    rawValue === true ||
+    rawValue === 1 ||
+    rawValue === '1' ||
+    String(rawValue).toLowerCase() === 'true'
+      ? 1
+      : 0;
 
-  const order = String(wordOrder || 'ABCD').toUpperCase();
+  const contactType = String(tag.contact_type || 'NO').toUpperCase();
 
-  if (order === 'CDAB' || order === 'BADC') {
-    return (low << 16) + high;
+  if (contactType === 'NC') {
+    return rawNumber === 1 ? 0 : 1;
   }
 
-  return (high << 16) + low;
+  return rawNumber;
+}
+
+function parseUInt16(word) {
+  return Number(word) & 0xffff;
+}
+
+function parseInt16(word) {
+  const value = Number(word) & 0xffff;
+
+  return value >= 0x8000 ? value - 0x10000 : value;
+}
+
+function parseUInt32(registers, tag) {
+  const buffer = build32BitBuffer(registers, tag);
+
+  return buffer.readUInt32BE(0);
+}
+
+function parseInt32(registers, tag) {
+  const buffer = build32BitBuffer(registers, tag);
+
+  return buffer.readInt32BE(0);
+}
+
+function parseFloat32(registers, tag) {
+  const buffer = build32BitBuffer(registers, tag);
+
+  return buffer.readFloatBE(0);
+}
+
+function build32BitBuffer(registers, tag) {
+  if (!Array.isArray(registers) || registers.length < 2) {
+    throw new Error(
+      `Tag ${tag.tag_key || tag.id} requires 2 registers for 32-bit value`,
+    );
+  }
+
+  const bytes = registersToBytes(registers[0], registers[1]);
+  const orderedBytes = applyByteOrder(bytes, tag);
+
+  return Buffer.from(orderedBytes);
+}
+
+function registersToBytes(word1, word2) {
+  const first = Number(word1) & 0xffff;
+  const second = Number(word2) & 0xffff;
+
+  const a = (first >> 8) & 0xff;
+  const b = first & 0xff;
+  const c = (second >> 8) & 0xff;
+  const d = second & 0xff;
+
+  return [a, b, c, d];
+}
+
+function applyByteOrder(bytes, tag) {
+  const order = getByteOrder(tag);
+  const [a, b, c, d] = bytes;
+
+  if (order === 'ABCD') {
+    return [a, b, c, d];
+  }
+
+  if (order === 'CDAB') {
+    return [c, d, a, b];
+  }
+
+  if (order === 'BADC') {
+    return [b, a, d, c];
+  }
+
+  if (order === 'DCBA') {
+    return [d, c, b, a];
+  }
+
+  return [a, b, c, d];
+}
+
+function getByteOrder(tag) {
+  const byteOrder = String(
+    tag.byte_order || tag.word_order || 'ABCD',
+  ).toUpperCase();
+
+  if (['ABCD', 'CDAB', 'BADC', 'DCBA'].includes(byteOrder)) {
+    return byteOrder;
+  }
+
+  return 'ABCD';
 }
 
 async function saveReadingValue({ batchId, tag, rawData, parsedValue }) {
@@ -554,7 +654,7 @@ async function saveReadingValue({ batchId, tag, rawData, parsedValue }) {
       : String(rawData);
 
   const valueNumber =
-    typeof parsedValue === 'number' && !Number.isNaN(parsedValue)
+    typeof parsedValue === 'number' && Number.isFinite(parsedValue)
       ? parsedValue
       : null;
 
@@ -654,15 +754,6 @@ function getConnectionStatus() {
     unitId: activeConfig.unitId || activeConfig.unit_id,
   };
 }
-// export async function deletePumpUnit(pumpId, operatorPin) {
-//   const res = await API.delete(`/modbus/units/${pumpId}/permanent`, {
-//     data: {
-//       operatorPin,
-//     },
-//   });
-
-//   return res.data;
-// }
 
 module.exports = {
   connectModbus,

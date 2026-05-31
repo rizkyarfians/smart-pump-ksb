@@ -14,12 +14,19 @@ export const DEFAULT_TAG_FORM = {
   label: '',
   plcAddress: '',
   registerAddress: '',
+
   registerType: 'holding_register',
-  dataType: 'uint16',
-  quantity: 1,
+  dataType: 'float32',
+  quantity: 2,
+
   unit: '',
   scaleValue: 1,
   offsetValue: 0,
+
+  contactType: 'NO',
+  byteOrder: 'ABCD',
+  wordOrder: 'ABCD',
+
   isReadable: true,
   isWritable: false,
   isEnabled: true,

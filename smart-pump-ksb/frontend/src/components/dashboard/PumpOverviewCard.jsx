@@ -40,21 +40,23 @@ export default function PumpOverviewCard({ pumps = [] }) {
             return Number(itemId) === Number(marker.pumpId);
           });
 
-          const status =
-            pump?.status ||
-            pump?.statusText ||
-            (pump?.isRunning ? 'Running' : 'Stopped');
+          const isRunning = toBool(pump?.isRunning ?? pump?.running);
 
-          return (
-            <PumpStatusMarker
-              key={marker.pumpId}
-              label={marker.label}
-              status={status}
-              isRunning={Boolean(pump?.isRunning || pump?.running)}
-              left={marker.left}
-              top={marker.top}
-            />
-          );
+const status =
+  pump?.status ||
+  pump?.statusText ||
+  (isRunning ? 'Running' : 'Stopped');
+
+return (
+  <PumpStatusMarker
+    key={marker.pumpId}
+    label={marker.label}
+    status={status}
+    isRunning={isRunning}
+    left={marker.left}
+    top={marker.top}
+  />
+);
         })}
       </div>
     </section>
@@ -141,4 +143,24 @@ function normalizeStatusText(status) {
   }
 
   return 'UNKNOWN';
+}
+
+function toBool(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+
+  if (value === 1) return true;
+  if (value === 0) return false;
+
+  const text = String(value ?? '').trim().toLowerCase();
+
+  return (
+    text === '1' ||
+    text === 'true' ||
+    text === 'on' ||
+    text === 'running' ||
+    text === 'run' ||
+    text === 'start' ||
+    text === 'started'
+  );
 }

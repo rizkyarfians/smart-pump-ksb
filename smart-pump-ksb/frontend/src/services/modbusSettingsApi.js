@@ -15,16 +15,6 @@ export async function fetchModbusSettingsData() {
     latestValues: latestRes.data?.data || [],
   };
 }
-export async function deletePumpUnit(pumpId, operatorPin) {
-  const res = await API.delete(`/modbus/units/${pumpId}/permanent`, {
-    data: {
-      operatorPin,
-    },
-  });
-
-  return res.data;
-}
-
 
 export async function fetchLatestModbusValues() {
   const res = await API.get('/db/latest-values');
@@ -56,8 +46,25 @@ export async function updatePumpUnit(pumpId, payload) {
   return res.data;
 }
 
+export async function setPumpUnitEnabled(pumpId, isEnabled, operatorPin) {
+  const res = await API.patch(`/modbus/units/${pumpId}/enabled`, {
+    isEnabled,
+    operatorPin,
+  });
+
+  return res.data;
+}
+
 export async function disablePumpUnit(pumpId, operatorPin) {
-  const res = await API.delete(`/modbus/units/${pumpId}`, {
+  return setPumpUnitEnabled(pumpId, false, operatorPin);
+}
+
+export async function enablePumpUnit(pumpId, operatorPin) {
+  return setPumpUnitEnabled(pumpId, true, operatorPin);
+}
+
+export async function deletePumpUnit(pumpId, operatorPin) {
+  const res = await API.delete(`/modbus/units/${pumpId}/permanent`, {
     data: {
       operatorPin,
     },
@@ -65,11 +72,13 @@ export async function disablePumpUnit(pumpId, operatorPin) {
 
   return res.data;
 }
+
 export async function addPlcTag(payload) {
   const res = await API.post('/modbus/tags', payload);
 
   return res.data;
 }
+
 export async function updatePlcTag(tagId, payload) {
   const res = await API.put(`/modbus/tags/${tagId}`, payload);
 
@@ -82,8 +91,14 @@ export async function setPlcTagEnabled(tagId, isEnabled, operatorPin) {
     operatorPin,
   });
 
-  
-
   return res.data;
 }
 
+export async function setPlcTagContactType(tagId, contactType, operatorPin) {
+  const res = await API.patch(`/modbus/tags/${tagId}/contact-type`, {
+    contactType,
+    operatorPin,
+  });
+
+  return res.data;
+}

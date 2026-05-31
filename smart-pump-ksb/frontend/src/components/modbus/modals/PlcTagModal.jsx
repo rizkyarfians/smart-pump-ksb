@@ -11,13 +11,36 @@ export default function PlcTagModal({
   onClose,
   onSubmit,
 }) {
-  const isCoil = type === 'coil';
+  const isCoilModal = type === 'coil';
   const isEdit = mode === 'edit';
+
+  const registerType = String(value.registerType || '').toLowerCase();
+  const dataType = String(value.dataType || '').toLowerCase();
+
+  const isBooleanTag =
+    registerType === 'coil' ||
+    registerType === 'discrete_input' ||
+    dataType === 'bool' ||
+    dataType === 'boolean';
+
+  const is32BitTag =
+    dataType === 'uint32' ||
+    dataType === 'int32' ||
+    dataType === 'float' ||
+    dataType === 'float32' ||
+    dataType === 'real';
 
   const updateField = (field, fieldValue) => {
     onChange((prev) => ({
       ...prev,
       [field]: fieldValue,
+    }));
+  };
+
+  const updateMultipleFields = (nextFields) => {
+    onChange((prev) => ({
+      ...prev,
+      ...nextFields,
     }));
   };
 
@@ -39,24 +62,54 @@ export default function PlcTagModal({
   };
 
   const updateRegisterType = (nextValue) => {
-    onChange((prev) => {
-      const nextIsBool =
-        nextValue === 'coil' || nextValue === 'discrete_input';
+    const cleanRegisterType = String(nextValue || '').toLowerCase();
 
-      return {
-        ...prev,
-        registerType: nextValue,
-        dataType: nextIsBool
-          ? 'bool'
-          : prev.dataType === 'bool'
-            ? 'uint16'
-            : prev.dataType,
-        quantity: nextIsBool ? 1 : prev.quantity,
-        isWritable:
-          nextValue === 'discrete_input' || nextValue === 'input_register'
-            ? false
-            : prev.isWritable,
-      };
+    const nextIsBoolean =
+      cleanRegisterType === 'coil' ||
+      cleanRegisterType === 'discrete_input';
+
+    const nextIsWritableAllowed =
+      cleanRegisterType === 'coil' ||
+      cleanRegisterType === 'holding_register';
+
+    onChange((prev) => ({
+      ...prev,
+      registerType: cleanRegisterType,
+
+      dataType: nextIsBoolean ? 'bool' : 'float32',
+      quantity: nextIsBoolean ? 1 : 2,
+
+      contactType: nextIsBoolean ? prev.contactType || 'NO' : prev.contactType || 'NO',
+      byteOrder: prev.byteOrder || 'ABCD',
+      wordOrder: prev.wordOrder || 'ABCD',
+
+      isWritable: nextIsWritableAllowed ? prev.isWritable : false,
+    }));
+  };
+
+  const updateDataType = (nextValue) => {
+    const cleanDataType = String(nextValue || '').toLowerCase();
+
+    const nextIs32Bit =
+      cleanDataType === 'uint32' ||
+      cleanDataType === 'int32' ||
+      cleanDataType === 'float' ||
+      cleanDataType === 'float32' ||
+      cleanDataType === 'real';
+
+    onChange((prev) => ({
+      ...prev,
+      dataType: cleanDataType,
+      quantity: nextIs32Bit ? 2 : 1,
+      byteOrder: prev.byteOrder || 'ABCD',
+      wordOrder: prev.wordOrder || 'ABCD',
+    }));
+  };
+
+  const updateByteOrder = (nextValue) => {
+    updateMultipleFields({
+      byteOrder: nextValue,
+      wordOrder: nextValue,
     });
   };
 
@@ -66,10 +119,10 @@ export default function PlcTagModal({
         <div className="mb-5">
           <h2 className="text-xl font-black text-slate-950">
             {isEdit
-              ? isCoil
+              ? isCoilModal
                 ? 'Edit Coil Mapping'
                 : 'Edit Register Mapping'
-              : isCoil
+              : isCoilModal
                 ? 'Add Coil Mapping'
                 : 'Add Register Mapping'}
           </h2>
@@ -94,21 +147,21 @@ export default function PlcTagModal({
             label="Tag Key"
             value={value.tagKey}
             onChange={(nextValue) => updateField('tagKey', nextValue)}
-            placeholder={isCoil ? 'vsd_run' : 'power'}
+            placeholder={isCoilModal ? 'vsd_run' : 'power'}
           />
 
           <InputField
             label="Label"
             value={value.label}
             onChange={(nextValue) => updateField('label', nextValue)}
-            placeholder={isCoil ? 'VSD Run Feedback' : 'Power VSD'}
+            placeholder={isCoilModal ? 'VSD Run Feedback' : 'Power VSD'}
           />
 
           <InputField
             label="PLC Address"
             value={value.plcAddress}
             onChange={updatePlcAddress}
-            placeholder={isCoil ? '%M104' : '%MW100'}
+            placeholder={isCoilModal ? '%M104' : '%MW100'}
           />
 
           <InputField
@@ -116,7 +169,7 @@ export default function PlcTagModal({
             type="number"
             value={value.registerAddress}
             onChange={(nextValue) => updateField('registerAddress', nextValue)}
-            placeholder={isCoil ? '104' : '100'}
+            placeholder={isCoilModal ? '104' : '100'}
           />
 
           <SelectField
@@ -124,7 +177,7 @@ export default function PlcTagModal({
             value={value.registerType}
             onChange={updateRegisterType}
             options={
-              isCoil
+              isCoilModal
                 ? [
                     { value: 'coil', label: 'Coil / %M' },
                     { value: 'discrete_input', label: 'Discrete Input' },
@@ -145,11 +198,12 @@ export default function PlcTagModal({
           <SelectField
             label="Data Type"
             value={value.dataType}
-            onChange={(nextValue) => updateField('dataType', nextValue)}
+            onChange={updateDataType}
             options={
-              isCoil
+              isBooleanTag
                 ? [{ value: 'bool', label: 'Bool' }]
                 : [
+                    { value: 'float32', label: 'Float32 / REAL' },
                     { value: 'uint16', label: 'UInt16' },
                     { value: 'int16', label: 'Int16' },
                     { value: 'uint32', label: 'UInt32' },
@@ -163,10 +217,36 @@ export default function PlcTagModal({
             type="number"
             value={value.quantity}
             onChange={(nextValue) => updateField('quantity', nextValue)}
-            placeholder="1"
+            placeholder={is32BitTag ? '2' : '1'}
           />
 
-          {!isCoil && (
+          {isBooleanTag && (
+            <SelectField
+              label="Contact Type"
+              value={value.contactType || 'NO'}
+              onChange={(nextValue) => updateField('contactType', nextValue)}
+              options={[
+                { value: 'NO', label: 'NO - Active when 1' },
+                { value: 'NC', label: 'NC - Active when 0' },
+              ]}
+            />
+          )}
+
+          {!isBooleanTag && is32BitTag && (
+            <SelectField
+              label="Byte Order"
+              value={value.byteOrder || 'ABCD'}
+              onChange={updateByteOrder}
+              options={[
+                { value: 'ABCD', label: 'ABCD - Normal' },
+                { value: 'CDAB', label: 'CDAB - Word Swap' },
+                { value: 'BADC', label: 'BADC - Byte Swap' },
+                { value: 'DCBA', label: 'DCBA - Full Reverse' },
+              ]}
+            />
+          )}
+
+          {!isBooleanTag && (
             <>
               <InputField
                 label="Unit"
@@ -220,6 +300,13 @@ export default function PlcTagModal({
             Enabled
           </label>
         </div>
+
+        {!isBooleanTag && is32BitTag && (
+          <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">
+            Float32 / UInt32 / Int32 memakai 2 register. Kalau nilai terbaca
+            aneh, coba ubah Byte Order ke CDAB, BADC, atau DCBA.
+          </div>
+        )}
 
         {Boolean(value.isWritable) && (
           <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">

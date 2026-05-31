@@ -50,8 +50,8 @@ function mapLatestValuesToDashboard(apiPumps) {
   return apiPumps.map((pump, index) => {
     const values = pump.values || {};
 
-    const statusValue = Number(getValue(values, 'status') || 0);
-    const isRunning = statusValue === 1;
+    const runningRow = findRunStatusValue(values);
+    const isRunning = toBool(runningRow?.value);
 
     const remoteValue = getValue(values, 'remote');
     const isRemote = toBool(remoteValue);
@@ -104,10 +104,11 @@ function mapLatestValuesToDashboard(apiPumps) {
         ? activeAlarms.map((item) => item.label).join(', ')
         : '',
 
-      // Status priority: Alarm > Running > Stopped
+      // Status dari source yang sama dengan Pump Details
       status: hasAlarm ? 'Alarm' : isRunning ? 'Running' : 'Stopped',
       statusText: hasAlarm ? 'Alarm' : isRunning ? 'Running' : 'Stopped',
-      statusRaw: statusValue,
+      statusRaw: runningRow?.value ?? null,
+      runSource: runningRow?.label || runningRow?.key || null,
 
       isRunning,
       running: isRunning,
@@ -160,6 +161,97 @@ function mapLatestValuesToDashboard(apiPumps) {
   });
 }
 
+function findRunStatusValue(values) {
+  const keys = [
+    'vsd_run',
+    'run_feedback',
+    'run_status',
+    'running',
+    'motor_run',
+    'pump_run',
+    'status',
+    'run',
+    'start',
+    'start_command',
+    'start_cmd',
+  ];
+
+  const labelKeywords = [
+    'vsd run',
+    'run feedback',
+    'running',
+    'motor run',
+    'pump run',
+    'run status',
+    'remote cmd',
+    'start',
+  ];
+
+  const excludeKeywords = [
+    'run hour',
+    'hour',
+    'runtime',
+    'reff',
+    'ref',
+    'reference',
+    'speed',
+  ];
+
+  for (const key of keys) {
+    const item = values?.[key];
+
+    if (!item) continue;
+
+    const labelText = String(item.label || '').toLowerCase();
+    const keyText = String(key || '').toLowerCase();
+
+    const excluded = excludeKeywords.some((keyword) => {
+      const keywordText = String(keyword).toLowerCase();
+
+      return labelText.includes(keywordText) || keyText.includes(keywordText);
+    });
+
+    if (!excluded) {
+      return {
+        key,
+        label: item.label || key,
+        value: item.value_text ?? item.value_number ?? item.raw_value ?? null,
+      };
+    }
+  }
+
+  const entries = Object.entries(values || {});
+
+  for (const [key, item] of entries) {
+    const labelText = String(item?.label || '').toLowerCase();
+    const keyText = String(key || '').toLowerCase();
+
+    const excluded = excludeKeywords.some((keyword) => {
+      const keywordText = String(keyword).toLowerCase();
+
+      return labelText.includes(keywordText) || keyText.includes(keywordText);
+    });
+
+    if (excluded) continue;
+
+    const matched = labelKeywords.some((keyword) => {
+      const keywordText = String(keyword).toLowerCase();
+
+      return labelText.includes(keywordText) || keyText.includes(keywordText);
+    });
+
+    if (matched) {
+      return {
+        key,
+        label: item.label || key,
+        value: item.value_text ?? item.value_number ?? item.raw_value ?? null,
+      };
+    }
+  }
+
+  return null;
+}
+
 function getValue(values, key) {
   const item = values?.[key];
 
@@ -183,12 +275,12 @@ function getLastUpdate(values) {
 }
 
 const ALARM_TAGS = [
-  { key: 'vsd_alarm', label: 'VSD Alarm', severity: 'critical' },
-  { key: 'bimetal', label: 'Bimetal / Overload', severity: 'critical' },
-  { key: 'emg', label: 'Emergency Stop', severity: 'critical' },
-  { key: 'emergency', label: 'Emergency Stop', severity: 'critical' },
-  { key: 'fault', label: 'Fault', severity: 'critical' },
-  { key: 'alarm', label: 'Alarm', severity: 'critical' },
+  { key: 'vsd_alarm', label: 'VSD Alarm' },
+  { key: 'bimetal', label: 'Bimetal / Overload' },
+  { key: 'emg', label: 'Emergency Stop' },
+  { key: 'emergency', label: 'Emergency Stop' },
+  { key: 'fault', label: 'Fault' },
+  { key: 'alarm', label: 'Alarm' },
 ];
 
 function getActiveAlarms(values) {
@@ -204,11 +296,32 @@ function toBool(value) {
 
   const text = String(value ?? '').trim().toLowerCase();
 
-  return (
+  if (
     text === '1' ||
     text === 'true' ||
     text === 'on' ||
     text === 'auto' ||
-    text === 'remote'
-  );
+    text === 'remote' ||
+    text === 'running' ||
+    text === 'run' ||
+    text === 'start' ||
+    text === 'started'
+  ) {
+    return true;
+  }
+
+  if (
+    text === '0' ||
+    text === 'false' ||
+    text === 'off' ||
+    text === 'manual' ||
+    text === 'local' ||
+    text === 'stopped' ||
+    text === 'stop' ||
+    text === ''
+  ) {
+    return false;
+  }
+
+  return false;
 }

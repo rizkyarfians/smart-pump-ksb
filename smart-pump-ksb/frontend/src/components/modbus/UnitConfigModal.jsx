@@ -28,9 +28,10 @@ export default function UnitConfigModal({
   onSaveConfig,
   onUpdateField,
   onAddRegister,
-  onAddCoil,onToggleTagEnabled,
+  onAddCoil,
+  onToggleTagEnabled,
   onEditTag,
-
+  onToggleContactType,
 }) {
   const lastUpdate = liveRows
     .map((row) => row.updated_at)
@@ -139,26 +140,24 @@ export default function UnitConfigModal({
             />
           )}
 
-          
+          {activeTab === 'registers' && (
+            <RegistersTab
+              tags={tags}
+              onAddRegister={onAddRegister}
+              onEditTag={onEditTag}
+              onToggleTagEnabled={onToggleTagEnabled}
+            />
+          )}
 
           {activeTab === 'coils' && (
-  <CoilsTab
-  coilRows={coilRows}
-  onAddCoil={onAddCoil}
-  onEditTag={onEditTag}
-  onToggleTagEnabled={onToggleTagEnabled}
-/>
-)}
-          {activeTab === 'registers' && (
-          <RegistersTab
-  tags={tags}
-  onAddRegister={onAddRegister}
-  onEditTag={onEditTag}
-  onToggleTagEnabled={onToggleTagEnabled}
-/>
-)}
-
-
+            <CoilsTab
+              coilRows={coilRows}
+              onAddCoil={onAddCoil}
+              onEditTag={onEditTag}
+              onToggleTagEnabled={onToggleTagEnabled}
+              onToggleContactType={onToggleContactType}
+            />
+          )}
         </div>
 
         <div className="flex items-center justify-between border-t border-slate-200 px-6 py-4">
