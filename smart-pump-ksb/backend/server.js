@@ -71,7 +71,7 @@ app.get('/api/test/db', async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, async () => {
+app.listen(PORT,'0.0.0.0', async () => {
   await testConnection();
 
   console.log(`Server running on port ${PORT}`);

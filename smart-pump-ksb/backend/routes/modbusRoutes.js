@@ -1354,4 +1354,5 @@ router.patch('/tags/:id/contact-type', async (req, res) => {
     });
   }
 });
+
 module.exports = router;

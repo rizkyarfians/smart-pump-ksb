@@ -2,10 +2,13 @@ const express = require('express');
 const router = express.Router();
 
 const { pool } = require('../config/db');
+const modbusService = require('../services/modbusService');
+
 const {
   writeCoil,
   writeHoldingRegister,
-} = require('../services/modbusService');
+  writeFloat32Register,
+} = modbusService;
 
 const OPERATOR_PIN = process.env.OPERATOR_PIN || '1234';
 
@@ -91,7 +94,11 @@ router.post('/command', async (req, res) => {
   value: 1,
   pulse: true,
 });
-} else if (normalizedCommand === 'SUBMIT_SPEED_REF') {
+} else if (
+  normalizedCommand === 'SUBMIT_SPEED_REF' ||
+  normalizedCommand === 'SPEED_REF' ||
+  normalizedCommand === 'SET_SPEED_REF'
+) {
       if (speedRef === null || speedRef === undefined || speedRef === '') {
         return res.status(400).json({
           success: false,
@@ -326,53 +333,53 @@ async function executeBinaryCommand({
     message: `${command} command sent successfully`,
   };
 }
-async function executeSpeedRefCommand({
-  pumpId,
-  speedRef,
-}) {
-  const tag = await findWritableTagByAliases(pumpId, [
-  'reff_speed',
-  'ref_speed',
-  'speed_ref',
-  'speed_reference',
-  'vsd_speed_ref',
-  'set_speed',
-  'rpm_ref',
-]);
+// async function executeSpeedRefCommand({
+//   pumpId,
+//   speedRef,
+// }) {
+//   const tag = await findWritableTagByAliases(pumpId, [
+//   'reff_speed',
+//   'ref_speed',
+//   'speed_ref',
+//   'speed_reference',
+//   'vsd_speed_ref',
+//   'set_speed',
+//   'rpm_ref',
+// ]);
 
-  if (!tag) {
-    throw new Error(`No writable speed reference tag found for pump ${pumpId}`);
-  }
+//   if (!tag) {
+//     throw new Error(`No writable speed reference tag found for pump ${pumpId}`);
+//   }
 
-  const value = Number(speedRef);
+//   const value = Number(speedRef);
 
-  if (Number.isNaN(value)) {
-    throw new Error('Invalid speed reference value');
-  }
+//   if (Number.isNaN(value)) {
+//     throw new Error('Invalid speed reference value');
+//   }
 
-  const rawValue = Math.round(
-    (value - Number(tag.offset_value || 0)) / Number(tag.scale_value || 1)
-  );
-console.log('[PUMP COMMAND] Speed ref command:', {
-  pumpId,
-  speedRef,
-  tag_key: tag.tag_key,
-  register_type: tag.register_type,
-  plc_address: tag.plc_address,
-  register_address: tag.register_address,
-  write_function_code: tag.write_function_code,
-  scale_value: tag.scale_value,
-  offset_value: tag.offset_value,
-  rawValue,
-});
-  await writeTag(tag, rawValue);
+//   const rawValue = Math.round(
+//     (value - Number(tag.offset_value || 0)) / Number(tag.scale_value || 1)
+//   );
+// console.log('[PUMP COMMAND] Speed ref command:', {
+//   pumpId,
+//   speedRef,
+//   tag_key: tag.tag_key,
+//   register_type: tag.register_type,
+//   plc_address: tag.plc_address,
+//   register_address: tag.register_address,
+//   write_function_code: tag.write_function_code,
+//   scale_value: tag.scale_value,
+//   offset_value: tag.offset_value,
+//   rawValue,
+// });
+//   await writeTag(tag, rawValue);
 
-  return {
-    tag,
-    rawValue: String(rawValue),
-    message: `Speed reference set to ${speedRef}`,
-  };
-}
+//   return {
+//     tag,
+//     rawValue: String(rawValue),
+//     message: `Speed reference set to ${speedRef}`,
+//   };
+// }
 
 async function findWritableTagByAliases(pumpId, aliases) {
   const placeholders = aliases.map(() => '?').join(',');
@@ -467,5 +474,111 @@ async function insertCommandLog({
     console.log('[PUMP COMMAND] Failed to insert command log:', error.message);
   }
 }
+async function executeSpeedRefCommand({ pumpId, speedRef }) {
+  const numericSpeedRef = Number(speedRef);
 
+  if (!Number.isFinite(numericSpeedRef)) {
+    throw new Error('Speed reference must be a valid number');
+  }
+
+  const [rows] = await pool.query(
+    `
+    SELECT
+      id,
+      pump_id,
+      tag_key,
+      label,
+      plc_address,
+      register_type,
+      register_address,
+      quantity,
+      write_function_code,
+      data_type,
+      byte_order,
+      word_order,
+      scale_value,
+      offset_value,
+      unit,
+      is_writable,
+      is_enabled
+    FROM modbus_tags
+    WHERE pump_id = ?
+  AND LOWER(tag_key) IN (
+    'reff_speed',
+    'ref_speed',
+    'speed_ref',
+    'speed_reference',
+    'vsd_speed_ref',
+    'set_speed',
+    'rpm_ref'
+  )
+  AND is_enabled = 1
+  AND is_writable = 1
+ORDER BY id ASC
+LIMIT 1
+    `,
+    [Number(pumpId)]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('Speed reference tag not found or not writable');
+  }
+
+  const tag = rows[0];
+
+  const registerType = String(tag.register_type || '').toLowerCase();
+  const dataType = String(tag.data_type || '').toLowerCase();
+
+  if (registerType !== 'holding_register') {
+    throw new Error('Speed reference must use holding_register');
+  }
+
+  let writeResult;
+
+  if (
+  dataType === 'float' ||
+  dataType === 'float32' ||
+  dataType === 'real'
+) {
+  writeResult = await writeFloat32Register(
+    tag.register_address,
+    numericSpeedRef,
+    tag
+  );
+} else {
+  writeResult = await writeHoldingRegister(
+    tag.register_address,
+    numericSpeedRef
+  );
+}
+
+  // update latest value langsung supaya UI/DB langsung kelihatan berubah
+  await pool.query(
+    `
+    INSERT INTO latest_modbus_values
+      (pump_id, tag_id, last_batch_id, raw_value, value_number, value_text, quality)
+    VALUES
+      (?, ?, NULL, ?, ?, NULL, 'good')
+    ON DUPLICATE KEY UPDATE
+      raw_value = VALUES(raw_value),
+      value_number = VALUES(value_number),
+      value_text = VALUES(value_text),
+      quality = 'good',
+      updated_at = CURRENT_TIMESTAMP(3)
+    `,
+    [
+      Number(pumpId),
+      tag.id,
+      writeResult?.values ? writeResult.values.join(',') : String(numericSpeedRef),
+      numericSpeedRef,
+    ]
+  );
+
+  return {
+    tag,
+    rawValue: String(numericSpeedRef),
+    message: `Speed reference set to ${numericSpeedRef} ${tag.unit || 'RPM'}`,
+    writeResult,
+  };
+}
 module.exports = router;

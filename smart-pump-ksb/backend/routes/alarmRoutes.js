@@ -15,16 +15,18 @@ const ALARM_RULES = {
     activeWhen: 1,
     text: (pumpName) => `${pumpName} Bimetal Trip`,
   },
-  emg: {
-    type: 'ALARM',
-    activeWhen: 1,
-    text: (pumpName) => `${pumpName} Emergency Stop`,
-  },
-  emergency: {
-    type: 'ALARM',
-    activeWhen: 1,
-    text: (pumpName) => `${pumpName} Emergency Stop`,
-  },
+  // emg: {
+  //   type: 'ALARM',
+  //   activeWhen: 1,
+  //   text: () => 'Emergency Stop',
+  //   isGlobal: true,
+  // },
+  // emergency: {
+  //   type: 'ALARM',
+  //   activeWhen: 1,
+  //   text: () => 'Emergency Stop',
+  //   isGlobal: true,
+  // },
   remote: {
     type: 'WARNING',
     activeWhen: 0,
@@ -58,10 +60,12 @@ function syncAlarmEventsInBackground(items) {
 /**
  * GET /api/alarms/summary
  *
- * Ambil alarm realtime untuk dashboard.
- * Catatan penting:
- * syncAlarmEvents sengaja jalan background, bukan await,
- * supaya dashboard tidak ikut lambat/macet saat alarm aktif.
+ * Realtime alarm untuk dashboard.
+ *
+ * Catatan:
+ * - latest_modbus_values.raw_value = raw asli PLC / Modbus.
+ * - latest_modbus_values.value_number = logical value dari modbusService.js.
+ * - NO/NC tidak dibalik lagi di alarmRoutes.js.
  */
 router.get('/summary', async (req, res) => {
   try {
@@ -100,9 +104,7 @@ router.get('/summary', async (req, res) => {
 /**
  * GET /api/alarms/logs
  *
- * Ambil history alarm dari tabel alarm_events.
- * Sebelum baca history, coba sinkronkan alarm realtime.
- * Kalau sync gagal, logs tetap dibaca agar halaman tidak mati total.
+ * History alarm dari tabel alarm_events.
  */
 router.get('/logs', async (req, res) => {
   try {
@@ -162,14 +164,26 @@ router.get('/logs', async (req, res) => {
       SELECT
         ae.id,
         ae.pump_id,
-        p.pump_code,
-        p.pump_name,
+
+        CASE
+          WHEN ae.alarm_key IN ('emg', 'emergency')
+          THEN 'STATION'
+          ELSE p.pump_code
+        END AS pump_code,
+
+        CASE
+          WHEN ae.alarm_key IN ('emg', 'emergency')
+          THEN 'Station'
+          ELSE p.pump_name
+        END AS pump_name,
 
         ae.tag_id,
         mt.tag_key,
         mt.label,
         mt.plc_address,
         mt.unit,
+        mt.register_type,
+        mt.contact_type,
 
         ae.alarm_type,
         ae.alarm_key,
@@ -220,6 +234,7 @@ async function getRealtimeAlarmItems() {
       t.label,
       t.plc_address,
       t.register_type,
+      t.contact_type,
       t.register_address,
 
       l.raw_value,
@@ -244,7 +259,9 @@ async function getRealtimeAlarmItems() {
     ORDER BY l.updated_at DESC
   `);
 
-  return rows
+  const dedupedRows = dedupeGlobalAlarmRows(rows);
+
+  return dedupedRows
     .map((row) => {
       const tagKey = String(row.tag_key || '').toLowerCase();
       const rule = ALARM_RULES[tagKey];
@@ -273,8 +290,15 @@ async function getRealtimeAlarmItems() {
 
         status: isActive ? 'ACTIVE' : 'NOT_ACTIVE',
 
+        // value_number sudah logical dari modbusService.js
         value,
+
+        // raw_value tetap nilai asli PLC / Modbus
         rawValue: row.raw_value,
+
+        registerType: row.register_type,
+        contactType: row.contact_type || 'NO',
+
         updatedAt: row.updated_at,
 
         date: formatDate(row.updated_at),
@@ -285,16 +309,50 @@ async function getRealtimeAlarmItems() {
 }
 
 /**
- * Sinkronkan kondisi realtime ke tabel alarm_events.
+ * Kalau tag global seperti EMG memakai address yang sama untuk semua pump,
+ * tampilkan satu alarm saja, bukan 4 alarm.
+ */
+function dedupeGlobalAlarmRows(rows) {
+  const result = [];
+  const seen = new Set();
+
+  for (const row of rows) {
+    const tagKey = String(row.tag_key || '').toLowerCase();
+    const rule = ALARM_RULES[tagKey];
+
+    if (!rule?.isGlobal) {
+      result.push(row);
+      continue;
+    }
+
+    const uniqueKey = [
+      tagKey,
+      String(row.register_type || '').toLowerCase(),
+      Number(row.register_address),
+    ].join(':');
+
+    if (seen.has(uniqueKey)) {
+      continue;
+    }
+
+    seen.add(uniqueKey);
+
+    result.push({
+      ...row,
+      pump_name: 'Station',
+      pump_code: 'STATION',
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Sinkronkan realtime alarm ke tabel alarm_events.
  *
- * - Jika alarm ACTIVE dan belum ada event ACTIVE:
- *   insert event baru.
- *
- * - Jika alarm ACTIVE dan event ACTIVE sudah ada:
- *   update value saja.
- *
- * - Jika alarm NOT_ACTIVE dan sebelumnya ada event ACTIVE:
- *   tutup event dengan ended_at.
+ * - ACTIVE dan belum ada event ACTIVE: insert.
+ * - ACTIVE dan sudah ada event ACTIVE: update.
+ * - NOT_ACTIVE dan sebelumnya ACTIVE: tutup event.
  */
 async function syncAlarmEvents(items) {
   for (const item of items) {
@@ -351,12 +409,16 @@ async function syncAlarmEvents(items) {
           `
           UPDATE alarm_events
           SET
+            alarm_text = ?,
+            alarm_type = ?,
             value_number = ?,
             raw_value = ?,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
           `,
           [
+            item.alarmText,
+            item.alarmType,
             Number(item.value),
             item.rawValue ?? null,
             activeRows[0].id,
@@ -370,6 +432,8 @@ async function syncAlarmEvents(items) {
         `
         UPDATE alarm_events
         SET
+          alarm_text = ?,
+          alarm_type = ?,
           status = 'NOT_ACTIVE',
           ended_at = ?,
           value_number = ?,
@@ -381,6 +445,8 @@ async function syncAlarmEvents(items) {
           AND status = 'ACTIVE'
         `,
         [
+          item.alarmText,
+          item.alarmType,
           toMysqlDateTime(item.updatedAt) || getNowMysqlDateTime(),
           Number(item.value),
           item.rawValue ?? null,

@@ -40,31 +40,32 @@ export default function PumpOverviewCard({ pumps = [] }) {
             return Number(itemId) === Number(marker.pumpId);
           });
 
-          const isRunning = toBool(pump?.isRunning ?? pump?.running);
+          const isRunning = toBool(
+            pump?.isRunning ??
+              pump?.running ??
+              pump?.run ??
+              pump?.vsdRun ??
+              pump?.status ??
+              pump?.statusText
+          );
 
-const status =
-  pump?.status ||
-  pump?.statusText ||
-  (isRunning ? 'Running' : 'Stopped');
-
-return (
-  <PumpStatusMarker
-    key={marker.pumpId}
-    label={marker.label}
-    status={status}
-    isRunning={isRunning}
-    left={marker.left}
-    top={marker.top}
-  />
-);
+          return (
+            <PumpStatusMarker
+              key={marker.pumpId}
+              label={marker.label}
+              isRunning={isRunning}
+              left={marker.left}
+              top={marker.top}
+            />
+          );
         })}
       </div>
     </section>
   );
 }
 
-function PumpStatusMarker({ label, status, isRunning, left, top }) {
-  const displayStatus = isRunning ? 'RUNNING' : normalizeStatusText(status);
+function PumpStatusMarker({ label, isRunning, left, top }) {
+  const displayStatus = isRunning ? 'RUNNING' : 'STOPPED';
 
   return (
     <div
@@ -77,7 +78,7 @@ function PumpStatusMarker({ label, status, isRunning, left, top }) {
         </div>
 
         <div className="mt-1 flex items-center justify-center gap-1">
-          <StatusDot status={displayStatus} />
+          <StatusDot isRunning={isRunning} />
 
           <span
             className={
@@ -96,53 +97,10 @@ function PumpStatusMarker({ label, status, isRunning, left, top }) {
   );
 }
 
-function StatusDot({ status }) {
-  const normalizedStatus = String(status).toLowerCase();
-
-  const dotClass =
-    normalizedStatus === 'running' ||
-    normalizedStatus === 'run' ||
-    normalizedStatus === 'on'
-      ? 'bg-emerald-500'
-      : normalizedStatus === 'stopped' ||
-          normalizedStatus === 'stop' ||
-          normalizedStatus === 'off'
-        ? 'bg-red-500'
-        : normalizedStatus === 'fault' ||
-            normalizedStatus === 'alarm'
-          ? 'bg-yellow-500'
-          : 'bg-slate-400';
+function StatusDot({ isRunning }) {
+  const dotClass = isRunning ? 'bg-emerald-500' : 'bg-red-500';
 
   return <span className={`h-2 w-2 rounded-full ${dotClass}`} />;
-}
-
-function normalizeStatusText(status) {
-  const normalizedStatus = String(status || '').toLowerCase();
-
-  if (
-    normalizedStatus === 'running' ||
-    normalizedStatus === 'run' ||
-    normalizedStatus === 'on'
-  ) {
-    return 'RUNNING';
-  }
-
-  if (
-    normalizedStatus === 'stopped' ||
-    normalizedStatus === 'stop' ||
-    normalizedStatus === 'off'
-  ) {
-    return 'STOPPED';
-  }
-
-  if (
-    normalizedStatus === 'fault' ||
-    normalizedStatus === 'alarm'
-  ) {
-    return 'FAULT';
-  }
-
-  return 'UNKNOWN';
 }
 
 function toBool(value) {

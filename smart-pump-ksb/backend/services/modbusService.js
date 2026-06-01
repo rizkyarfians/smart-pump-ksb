@@ -178,7 +178,6 @@ async function readDiscreteInput(address, quantity = 1) {
 
   return result.data;
 }
-
 async function writeHoldingRegister(address, value) {
   if (!client.isOpen) {
     await connectModbus();
@@ -193,8 +192,111 @@ async function writeHoldingRegister(address, value) {
     message: 'Register written successfully',
     address,
     realAddress,
-    value,
+    value: Number(value),
   };
+}
+
+async function writeHoldingRegisters(address, values) {
+  if (!client.isOpen) {
+    await connectModbus();
+  }
+
+  const realAddress = normalizeRegisterAddress(address);
+
+  const registerValues = Array.isArray(values)
+    ? values.map((value) => Number(value) & 0xffff)
+    : [Number(values) & 0xffff];
+
+  await client.writeRegisters(realAddress, registerValues);
+
+  return {
+    success: true,
+    message: 'Registers written successfully',
+    address,
+    realAddress,
+    values: registerValues,
+  };
+}
+
+async function writeFloat32Register(address, value, tag = {}) {
+  if (!client.isOpen) {
+    await connectModbus();
+  }
+
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    throw new Error(`Invalid float32 value: ${value}`);
+  }
+
+  const realAddress = normalizeRegisterAddress(address);
+  const registers = float32ToRegisters(numericValue, tag);
+
+  console.log('[MODBUS FLOAT32 WRITE]', {
+    inputAddress: address,
+    realAddress,
+    value: numericValue,
+    registers,
+    byteOrder: tag.byte_order,
+    wordOrder: tag.word_order,
+  });
+
+  // Pakai FC6 dua kali, lebih aman daripada FC16 di beberapa simulator/PLC
+  await client.writeRegister(realAddress, registers[0]);
+  await delay(80);
+  await client.writeRegister(realAddress + 1, registers[1]);
+
+  return {
+    success: true,
+    message: 'Float32 register written successfully',
+    address,
+    realAddress,
+    value: numericValue,
+    values: registers,
+  };
+}
+
+function float32ToRegisters(value, tag = {}) {
+  const buffer = Buffer.alloc(4);
+
+  buffer.writeFloatBE(Number(value), 0);
+
+  const bytes = [
+    buffer[0],
+    buffer[1],
+    buffer[2],
+    buffer[3],
+  ];
+
+  const rawBytes = applyInverseByteOrder(bytes, tag);
+
+  return [
+    ((rawBytes[0] << 8) | rawBytes[1]) & 0xffff,
+    ((rawBytes[2] << 8) | rawBytes[3]) & 0xffff,
+  ];
+}
+
+function applyInverseByteOrder(bytes, tag = {}) {
+  const order = getByteOrder(tag);
+  const [a, b, c, d] = bytes;
+
+  if (order === 'ABCD') {
+    return [a, b, c, d];
+  }
+
+  if (order === 'CDAB') {
+    return [c, d, a, b];
+  }
+
+  if (order === 'BADC') {
+    return [b, a, d, c];
+  }
+
+  if (order === 'DCBA') {
+    return [d, c, b, a];
+  }
+
+  return [a, b, c, d];
 }
 
 async function writeCoil(address, value) {
@@ -534,11 +636,12 @@ function parseBooleanValue(rawValue, tag) {
     rawValue === true ||
     rawValue === 1 ||
     rawValue === '1' ||
-    String(rawValue).toLowerCase() === 'true'
+    String(rawValue).trim().toLowerCase() === 'true' ||
+    String(rawValue).trim().toLowerCase() === 'on'
       ? 1
       : 0;
 
-  const contactType = String(tag.contact_type || 'NO').toUpperCase();
+  const contactType = String(tag.contact_type || 'NO').trim().toUpperCase();
 
   if (contactType === 'NC') {
     return rawNumber === 1 ? 0 : 1;
@@ -764,6 +867,8 @@ module.exports = {
   readDiscreteInput,
 
   writeHoldingRegister,
+  writeHoldingRegisters,
+writeFloat32Register,
   writeCoil,
   pulseCoil,
   pulseTag,
